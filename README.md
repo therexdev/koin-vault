@@ -588,6 +588,17 @@ Connection approvals require a fresh WebAuthn assertion, checked for origin, rel
 
 The Home screen's **Connect** button scans an expiring QR code from a supported app. The QR contains only a random session id and secret. It never contains a private key, passkey, or reusable signature. Connected apps may request contract-call transactions; KOIN Vault rebuilds each transaction with the smart account as payee, shows the requesting site and contract calls, and requires a fresh passkey approval before the sponsor co-signs and broadcasts it. Sessions expire after 30 minutes, requests after 10 minutes, and the user can reject a request or disconnect the app at any time.
 
+Wallet-side disconnect revokes the relay session before reporting success. A failed
+network request keeps the connection available for retry. OURO and Trade Koinos
+check their active sessions every two seconds and on tab focus, visibility return,
+or network reconnection, clearing the website's wallet address and session when
+revoked. Suspended tabs update when reopened. Other integrations should check
+`GET /api/dapp/status` with their session ID and secret: HTTP 404/410, a disconnected
+session, or a changed address ends the connection. Network errors and 5xx responses
+should be retried without treating them as a user-requested disconnect. The shared
+backend's existing revocation API is unchanged.
+
+
 OURO paid launches use the separate `/api/dapp/launch` endpoint. Only OURO's
 allowed origins can request this flow. It accepts exactly a KOIN launch-fee
 transfer and a new collection upload, already signed by the collection key.

@@ -245,6 +245,7 @@
       paintDappRequest(data.app, data.requests[0] || null);
       if (!data.requests.length) dappSay(`Connected to ${data.app.name}`, 'ok');
     } catch (e) {
+      if (DAPP !== pair || !ADDRESS) return;
       dappSay(e.status === 404 ? 'Connection expired. Scan a new QR to reconnect.' : 'Cannot receive app requests: ' + e.message, 'err');
       if (e.status === 404) { saveDapp(null); stopDappPoll(); $('#btn-dapp-disconnect').hidden = true; paintDappRequest(null, null); }
     } finally { DAPP_POLLING = false; }
@@ -275,9 +276,18 @@
     catch (e) { dappSay(e.message || 'Could not reject request', 'err'); }
   });
   $('#btn-dapp-disconnect').addEventListener('click', async () => {
-    if (!DAPP || !confirm('Disconnect this app?')) return;
-    try { await api('/api/dapp/disconnect', DAPP); } catch (_) {}
-    saveDapp(null); stopDappPoll(); paintDappRequest(null, null); $('#btn-dapp-disconnect').hidden = true; dappSay('App disconnected');
+    const pair = DAPP, btn = $('#btn-dapp-disconnect');
+    if (!pair || btn.disabled || !confirm('Disconnect this app?')) return;
+    btn.disabled = true;
+    try {
+      try { await api('/api/dapp/disconnect', pair); }
+      catch (e) { if (e.status !== 404 && e.status !== 410) throw e; }
+      if (DAPP !== pair) return;
+      saveDapp(null); stopDappPoll(); paintDappRequest(null, null); btn.hidden = true;
+      dappSay('App disconnected. Its website will update automatically.');
+    } catch (e) {
+      if (DAPP === pair) dappSay('Could not disconnect the app. Check your connection and try again.', 'err');
+    } finally { btn.disabled = false; }
   });
 
   /* ---------------- landing: THE button ---------------- */
