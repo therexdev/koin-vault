@@ -97,10 +97,12 @@
      kept until the wallet is open, applied once, and scrubbed from the URL
      so a reload does not replay them. */
   let PENDING_INTENT = null;
+  let OPEN_RECOVERY = false;
   let PENDING_CONNECT = null;
   try {
     const q = new URLSearchParams(location.search);
-    if (q.get('open') || q.get('tab')) PENDING_INTENT = { open: q.get('open'), tab: q.get('tab') };
+    OPEN_RECOVERY = q.get('open') === 'recover';
+    if (!OPEN_RECOVERY && (q.get('open') || q.get('tab'))) PENDING_INTENT = { open: q.get('open'), tab: q.get('tab') };
     if (q.get('connect') && q.get('secret')) PENDING_CONNECT = { sessionId: q.get('connect'), secret: q.get('secret') };
     if ([...q.keys()].length) history.replaceState(null, '', location.pathname);
   } catch (_) {}
@@ -710,6 +712,6 @@
   DAPP = loadDapp();
   if (DAPP && !DAPP.address) saveDapp(null); // legacy connections need fresh verified approval
   // Remembering an address is not an unlock. Reopening requires a new ceremony.
-  show('#view-landing');
+  show(OPEN_RECOVERY ? '#view-recover' : '#view-landing');
   document.addEventListener('visibilitychange', () => { if (!document.hidden) void pollDapp(); });
 })();

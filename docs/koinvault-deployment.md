@@ -20,10 +20,15 @@ This lets both sites run without two workers competing for one data directory.
 5. Check `/api/config` on the original domain retains its original RP ID (a
    null RP ID means the browser uses `wallet.usekoinos.com`). The new domain
    returns `rpId:koinvault.app`.
-6. On the original domain, choose **Create Account or Sign In** and verify the
+6. The original domain is sign-in only: choose **Sign In** and verify the
    existing wallet address. **Choose a saved passkey** opens the full picker.
-   The combined button creates a wallet when no passkey is remembered; use the
-   saved-passkey picker for an existing wallet on a new browser.
+   Missing accounts link to KOIN Vault for signup. Recovery files are opened
+   at `https://koinvault.app/?open=recover`.
+7. KOIN Vault keeps **Create Account or Sign In** and its recovery form.
+   The original backend accepts its authenticated forwarded signup and
+   recovery requests; retain the matching `SPONSOR_WIF` on both deployments.
+   Users can still create and activate a recovery kit on the original site
+   before using that file on KOIN Vault.
 
 There is no new environment variable required for the standard two-domain
 setup. `PUBLIC_URL=https://koinvault.app` and `PASSKEY_RPID=koinvault.app` remain
