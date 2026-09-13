@@ -20,9 +20,10 @@ This lets both sites run without two workers competing for one data directory.
 5. Check `/api/config` on the original domain retains its original RP ID (a
    null RP ID means the browser uses `wallet.usekoinos.com`). The new domain
    returns `rpId:koinvault.app`.
-6. On the original domain, choose **Sign in with passkey** and verify the
+6. On the original domain, choose **Create Account or Sign In** and verify the
    existing wallet address. **Choose a saved passkey** opens the full picker.
-   Creating a separate wallet now requires its own button and confirmation.
+   The combined button creates a wallet when no passkey is remembered; use the
+   saved-passkey picker for an existing wallet on a new browser.
 
 There is no new environment variable required for the standard two-domain
 setup. `PUBLIC_URL=https://koinvault.app` and `PASSKEY_RPID=koinvault.app` remain
