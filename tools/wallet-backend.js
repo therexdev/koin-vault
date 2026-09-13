@@ -81,7 +81,7 @@ function createProxy({ backendUrl, publicUrl, rpId, secret, clientIp, timeoutMs 
       }
     } catch (_) { return; }
     const body = Buffer.concat(chunks);
-    const headers = { [PROOF_HEADER]: proxyProof(req, clientIp(req), secret) };
+    const headers = { 'accept-encoding': 'identity', [PROOF_HEADER]: proxyProof(req, clientIp(req), secret) };
     for (const name of ['content-type', 'origin', 'referer', 'x-wallet-client']) {
       if (req.headers[name]) headers[name] = req.headers[name];
     }
@@ -89,7 +89,9 @@ function createProxy({ backendUrl, publicUrl, rpId, secret, clientIp, timeoutMs 
     const transport = target.protocol === 'https:' ? https : http;
     // Use a fixed configured origin, no redirects, and exactly one upstream
     // attempt. Retrying a POST here could submit a funding action twice.
-    const upstream = transport.request(target, { method: req.method, path, headers });
+    // Keep the complete request path in the URL as well as the actual HTTP
+    // request. Hosting HTTPS agents may route using the URL before options.
+    const upstream = transport.request(new URL(path, target.origin), { method: req.method, headers });
     const deadline = setTimeout(() => upstream.destroy(new Error('Wallet backend timed out')), timeoutMs);
     const finish = () => clearTimeout(deadline);
     res.once('close', () => { finish(); if (!res.writableEnded) upstream.destroy(); });
@@ -109,6 +111,9 @@ function createProxy({ backendUrl, publicUrl, rpId, secret, clientIp, timeoutMs 
         const status = answer.statusCode || 502;
         if (status >= 300 && status < 400) return reply(503, 'Wallet backend returned an unexpected redirect');
         let payload = Buffer.concat(output);
+        if (payload.length && !String(answer.headers['content-type'] || '').includes('application/json')) {
+          return reply(503, 'Wallet backend did not return a valid API response');
+        }
         const apiPath = url.pathname.replace(/^\/android(?=\/api\/)/, '');
         if (status === 200 && ['/api/config', '/api/dapp/create'].includes(apiPath)) {
           try {

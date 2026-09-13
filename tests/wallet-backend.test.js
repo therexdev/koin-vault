@@ -47,6 +47,7 @@ const listen = async server => { server.listen(0, '127.0.0.1'); await once(serve
     calls.push({ url: req.url, body: Buffer.concat(parts).toString(), origin: req.headers.origin, ip: backend.trustedProxyIp(req, secret), client: req.headers['x-wallet-client'] });
     if (req.url === '/api/submit') return req.socket.destroy();
     if (req.url === '/api/stall') return;
+    if (req.url === '/api/html') { res.setHeader('Content-Type', 'text/html'); return res.end('<html>Wallet home</html>'); }
     if (req.url === '/api/redirect') { res.writeHead(302, { Location: 'https://evil.example' }); return res.end(); }
     res.setHeader('Content-Type', 'application/json');
     res.setHeader('Access-Control-Allow-Origin', 'https://ouro.lifestyle');
@@ -74,10 +75,28 @@ const listen = async server => { server.listen(0, '127.0.0.1'); await once(serve
     assert.equal((await fetch(proxyUrl + '/api/submit', { method: 'POST', body: '{}' })).status, 503);
     assert.equal(calls.filter(c => c.url === '/api/submit').length, 1, 'An ambiguous POST must never be retried');
     assert.equal((await fetch(proxyUrl + '/api/redirect')).status, 503);
+    assert.equal((await fetch(proxyUrl + '/api/html')).status, 503, 'HTML is not a healthy wallet API response');
     assert.equal((await fetch(proxyUrl + '/api/stall')).status, 503);
     assert.equal((await fetch(proxyUrl + '/api/config', { headers: { 'x-koin-wallet-proxy': 'loop' } })).status, 508);
     for (const target of [vault, 'http://evil.example', 'https://user:password@example.com', 'https://example.com/path']) {
       assert.throws(() => backend.createProxy({ backendUrl: target, publicUrl: vault, clientIp: () => '' }));
+    }
+    const https = require('node:https'), originalRequest = https.request;
+    let receivedUrl;
+    https.request = (url, options) => {
+      receivedUrl = new URL(url);
+      return http.request(new URL(receivedUrl.pathname + receivedUrl.search, upstreamUrl), options);
+    };
+    const httpsProxy = http.createServer(backend.createProxy({ backendUrl: 'https://backend.example', publicUrl: vault, secret, clientIp: () => '192.0.2.17' }));
+    try {
+      const address = await listen(httpsProxy);
+      const response = await fetch(address + '/api/whoami?credentialId=fixture%2Bkey');
+      assert.equal(response.status, 200);
+      assert.equal(receivedUrl.href, 'https://backend.example/api/whoami?credentialId=fixture%2Bkey', 'HTTPS transport must receive the complete API URL, not the website root');
+      assert.equal(calls.at(-1).url, '/api/whoami?credentialId=fixture%2Bkey');
+    } finally {
+      https.request = originalRequest;
+      httpsProxy.closeAllConnections(); await new Promise(resolve => httpsProxy.close(resolve));
     }
     console.log('✓ Proxy preserves existing-account lookups, Android flags, CORS and wallet links; errors never trigger duplicate submissions');
   } finally {
