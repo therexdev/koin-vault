@@ -30,6 +30,7 @@
     });
   }
   let PENDING_KIT = null;    // a generated-but-unregistered recovery kit
+  let GENERATING_KIT = false;
   let RELEASE_KIT_DOWNLOAD = null;
   let POLL = null;
 
@@ -289,6 +290,7 @@
     go.disabled = !ok || ENTERING;
     $('#btn-phone-signin').disabled = !ok || ENTERING;
     $('#btn-phone-create').disabled = !ok || ENTERING;
+    $('#btn-saved-signin').disabled = !ok || ENTERING;
     $('#no-passkey').hidden = ok;
     $('#alt-unlock').hidden = !ok;
     $('#phone-option').hidden = !ok;
@@ -334,6 +336,7 @@
     go.disabled = true;
     $('#btn-phone-signin').disabled = true;
     $('#btn-phone-create').disabled = true;
+    $('#btn-saved-signin').disabled = true;
     UI.setPasskeyBusy(true);
     UI.closeSheet({ immediate: true, restoreFocus: false });
     try {
@@ -342,6 +345,9 @@
     } catch (e) {
       if (e.status === 404) {
         alertLine('No wallet was found for that passkey. Choose another saved passkey, or use a registered recovery kit.');
+      } else if (usePhone && e.name === 'NotAllowedError') {
+        alertLine('Phone sign-in was cancelled or unavailable. If you only saw USB, choose Other options → Use a phone or tablet, or try a saved passkey in Chrome.');
+        UI.openSheet('sheet-phone');
       } else alertLine(friendly(e));
     } finally {
       ENTERING = false;
@@ -360,8 +366,9 @@
   });
   $('#btn-use-phone').addEventListener('click', (e) => { e.preventDefault(); usePhone(); });
   $('#btn-phone-signin').addEventListener('click', () => enter(false, true, true));
-  $('#btn-phone-create').addEventListener('click', () => enter(true, false, true));
-  $('#btn-unlock-existing').addEventListener('click', (e) => { e.preventDefault(); return enter(false, true); });
+  $('#btn-saved-signin').addEventListener('click', () => enter(false, true, false));
+  $('#btn-phone-create').addEventListener('click', () => enter(true, false, false));
+  $('#btn-unlock-existing').addEventListener('click', (e) => { e.preventDefault(); return enter(false, true, false); });
   $('#btn-open-recover').addEventListener('click', (e) => { e.preventDefault(); show('#view-recover'); });
   $('#btn-recover-back').addEventListener('click', (e) => { e.preventDefault(); show('#view-landing'); });
 
@@ -452,6 +459,11 @@
   });
 
   /* ---------------- backups card ---------------- */
+  function credentialLimit() {
+    const limit = Number(cfg.maxCredentialsPerAccount);
+    // Older backends enforce six. Wait for their advertised limit to increase.
+    return Number.isSafeInteger(limit) && limit > 0 ? limit : 6;
+  }
   function renderCredentials() {
     const list = $('#cred-list');
     list.innerHTML = '';
@@ -463,14 +475,22 @@
         + '<span class="cred-label"></span>'
         + (current ? ' <span class="cred-now">— in use here</span>' : '')
         + (c.ts ? ' <span class="cred-ts">' + new Date(c.ts).toLocaleDateString() + '</span>' : '');
-      li.querySelector('.cred-label').textContent = c.label || 'passkey';
+      li.querySelector('.cred-label').textContent = (c.label || kind)
+        + (c.kind === 'recovery' ? ' · ' + c.id.slice(-8) : '');
       list.appendChild(li);
     }
-    const hasKit = CREDENTIALS.some((c) => c.kind === 'recovery');
+    const kitCount = CREDENTIALS.filter((c) => c.kind === 'recovery').length;
+    const hasKit = kitCount > 0;
     $('#kit-armed').hidden = !hasKit;
-    const full = CREDENTIALS.length >= 6;
+    $('#kit-armed').textContent = '✓ ' + kitCount + (kitCount === 1 ? ' recovery kit is' : ' recovery kits are')
+      + ' active. Each saved file opens this wallet independently.';
+    const limit = credentialLimit(), full = CREDENTIALS.length >= limit;
+    $('#credential-capacity').textContent = CREDENTIALS.length + ' of ' + limit + ' credential slots used (passkeys + recovery kits).'
+      + (full ? ' This wallet has reached the configured limit; another kit cannot be activated yet.' : ' You can add a new kit if an earlier file is lost.');
     $('#btn-add-passkey').hidden = full || !!PENDING_BACKUP;
-    $('#btn-make-kit').hidden = full || !!PENDING_KIT;
+    $('#btn-make-kit').hidden = false;
+    $('#btn-make-kit').disabled = full || !!PENDING_KIT || GENERATING_KIT;
+    $('#kit-create-label').textContent = PENDING_KIT ? 'Save and activate the kit below' : hasKit ? 'Create another recovery kit' : 'Create recovery kit';
     $('#recovery-banner').hidden = !RECOVERY;
     const single = CREDENTIALS.length === 1 && !hasKit;
     $('#backup-nudge').hidden = !single || !ACTIVE;
@@ -551,7 +571,8 @@
   }
   $('#btn-make-kit').addEventListener('click', async () => {
     const btn = $('#btn-make-kit'), account = ADDRESS, generation = PAINT_GEN;
-    if (btn.disabled || PENDING_KIT || !account) return;
+    if (btn.disabled || GENERATING_KIT || PENDING_KIT || !account || CREDENTIALS.length >= credentialLimit()) return;
+    GENERATING_KIT = true;
     btn.disabled = true;
     try {
       const k = await Recovery.generate();
@@ -562,7 +583,7 @@
       $('#kit-text').textContent = Recovery.kitText(PENDING_KIT);
       $('#kit-box').hidden = false;
       $('#btn-kit-activate').disabled = false;
-      btn.hidden = true;
+      renderCredentials();
       bsay('');
       // Some browsers block automatic downloads after asynchronous key creation.
       // Keep the same file on a real download link for a direct user click.
@@ -572,7 +593,7 @@
         if (!RELEASE_KIT_DOWNLOAD) clearPendingKit();
         bsay(e.message || 'Could not prepare your recovery kit', 'err');
       }
-    } finally { btn.disabled = false; }
+    } finally { GENERATING_KIT = false; renderCredentials(); }
   });
   $('#btn-kit-activate').addEventListener('click', async () => {
     if (!PENDING_KIT || $('#btn-kit-activate').disabled) return;
@@ -599,7 +620,7 @@
   $('#btn-kit-cancel').addEventListener('click', () => {
     if ($('#btn-kit-cancel').disabled) return;
     clearPendingKit();
-    $('#btn-make-kit').hidden = CREDENTIALS.length >= 6;
+    renderCredentials();
     bsay('Kit discarded — nothing was registered. Delete the downloaded file.', '');
   });
 

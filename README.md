@@ -91,9 +91,25 @@ account already trusts:
   the funds.
 
 Registered credentials are capped per account (`MAX_CREDENTIALS_PER_ACCOUNT`,
-default 6) and rate-limited. The one truly fatal state left is losing every
+default 32) and rate-limited. The API advertises the configured limit as
+`maxCredentialsPerAccount`. The one truly fatal state left is losing every
 passkey **and** the kit at once. (The module also has `unregister` for
 retiring lost credentials — not yet surfaced in the UI.)
+
+The Backups card keeps **Create another recovery kit** visible and shows capacity.
+Each kit has a distinct filename containing its public credential ID; old files
+remain valid after a new kit is activated. Downloading alone does not activate a
+kit, and the server never stores the kit's private key. The default capacity was
+raised from six to 32 so a lost file need not prevent creating another kit.
+
+On desktop, **Use a phone or saved passkey** offers a discoverable saved-passkey
+picker (including Google Password Manager) and a phone-preferred browser QR flow.
+Creation leaves authenticator attachment unrestricted. A Google account can sync
+an existing `koinvault.app` passkey; Google OAuth alone is not wallet authority.
+The browser/OS generates the secure phone QR and needs compatible software and
+Bluetooth on both devices. USB security keys are optional. Native phone pairing
+requires real-device testing; automated tests cover WebAuthn request options and
+ensure failed sign-in never creates a new account.
 
 ## Sending
 
@@ -530,7 +546,7 @@ node server.js
 | `TRUST_PROXY_HOPS` | `0` | proxy hops in front (Hostinger = 1) for real client IPs |
 | `MAX_ACCOUNTS_PER_DAY` | `3` | account creations per IP per day |
 | `MAX_ACCOUNTS_PER_DAY_GLOBAL` | `20` | account creations per day, total |
-| `MAX_CREDENTIALS_PER_ACCOUNT` | `6` | passkeys + recovery kits per account |
+| `MAX_CREDENTIALS_PER_ACCOUNT` | `32` | passkeys + recovery kits per account |
 | `MIN_CREATE_MANA` | `120` | refuse signups when sponsor mana is below this |
 | `MAX_TRANSFERS_PER_DAY` | `30` | per-address daily transfer budget (per-IP is 2×) |
 | `MIN_SPONSOR_MANA` | `5` | refuse transfers when sponsor mana is below this |

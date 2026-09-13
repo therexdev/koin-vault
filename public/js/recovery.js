@@ -108,7 +108,10 @@
     const blob = new Blob([kitText(kit)], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     link.href = url;
-    link.download = 'koinos-recovery-kit-' + String(kit.address || 'account').slice(0, 8) + '.txt';
+    // Each new credential gets its own filename; repeat downloads stay identical.
+    const filePart = (value) => String(value || '').replace(/[^a-zA-Z0-9_-]/g, '');
+    link.download = 'koinos-recovery-kit-' + filePart(kit.address || 'account').slice(0, 8)
+      + '-' + filePart(kit.credentialId) + '.txt';
     return () => {
       URL.revokeObjectURL(url);
       if (link.href === url) {

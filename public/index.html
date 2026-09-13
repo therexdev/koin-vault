@@ -69,8 +69,8 @@
     <p class="note" id="connection-status" role="status">Connecting to wallet…</p>
     <p class="alt" id="alt-unlock" hidden>Have another saved passkey?
       <a href="#" id="btn-unlock-existing">Choose a saved passkey</a></p>
-    <p class="alt" id="phone-option" hidden>No fingerprint reader on this device?
-      <a href="#" id="btn-use-phone">Use a phone</a></p>
+    <p class="alt" id="phone-option" hidden>Signing in on another device?
+      <a href="#" id="btn-use-phone">Use a phone or saved passkey</a></p>
     <p class="alt">Lost every passkey? <a href="#" id="btn-open-recover">Recover with your kit</a></p>
     <!-- WEB_ONLY_START -->
     <p class="alt"><button class="ghost" id="btn-install-landing" type="button" hidden><svg class="ic ic-18"><use href="#i-install"/></svg> Install KOIN Vault</button></p>
@@ -298,12 +298,12 @@
           if its account (Google / Apple) is ever lost, so is the wallet. Add a second passkey from another
           device, or download a recovery kit you keep offline.</p>
         <ul class="cred-list" id="cred-list"></ul>
-        <p class="hint callout good" id="kit-armed" hidden>✓ A recovery kit is active for this
-          account — the file you saved opens it all by itself.</p>
+        <p class="hint callout good" id="kit-armed" hidden></p>
+        <p class="hint" id="credential-capacity" role="status"></p>
         <div class="status" id="backup-status" role="status" aria-live="polite" hidden></div>
         <div class="btn-row">
           <button class="ghost wide" id="btn-add-passkey" type="button"><svg class="ic ic-18"><use href="#i-key"/></svg> Add backup passkey</button>
-          <button class="ghost wide" id="btn-make-kit" type="button"><svg class="ic ic-18"><use href="#i-ring"/></svg> Create recovery kit</button>
+          <button class="ghost wide" id="btn-make-kit" type="button" aria-describedby="credential-capacity"><svg class="ic ic-18"><use href="#i-ring"/></svg> <span id="kit-create-label">Create recovery kit</span></button>
         </div>
         <div id="backup-box" hidden>
           <p class="hint">New passkey captured ✓ — now confirm with your
@@ -317,6 +317,8 @@
           <p class="hint"><strong>Save your recovery kit as a .txt file.</strong>
             If the download didn't start, use the button below. Keep the file safe and offline —
             anyone holding it controls the account. It only works after you activate it.</p>
+          <p class="hint">This adds another kit for the same wallet. Existing kits stay active,
+            even if their files were deleted or destroyed.</p>
           <a class="cta small" id="btn-kit-download" download>Download recovery kit (.txt)</a>
           <details id="kit-preview">
             <summary class="hint">View kit text</summary>
@@ -472,16 +474,24 @@
 <div class="sheet" id="sheet-phone" role="dialog" aria-modal="true" aria-labelledby="phone-title" tabindex="-1" hidden>
   <button class="handle" type="button" aria-label="Close" data-close></button>
   <button class="x" id="btn-phone-close" type="button" aria-label="Close" data-close><svg class="ic"><use href="#i-x"/></svg></button>
-  <h3 id="phone-title">Use your phone’s passkey</h3>
-  <p class="hint">Choose an option below, then select <strong>Use a phone or tablet</strong>
-    in your browser’s passkey window. Scan its QR code with your phone’s camera and
-    confirm with your fingerprint, face or device PIN.</p>
-  <p class="hint">Keep your phone nearby with Bluetooth on for both devices.
-    The wording and available options depend on your browser.</p>
-  <div class="btn-row">
-    <button class="cta small" id="btn-phone-signin" type="button" disabled>Sign in with phone</button>
-    <button class="ghost wide" id="btn-phone-create" type="button" disabled>Create with phone</button>
-  </div>
+  <h3 id="phone-title">Choose your passkey</h3>
+  <button class="cta small" id="btn-saved-signin" type="button" disabled>Use a saved passkey</button>
+  <p class="hint">For Google Password Manager, sign in to Chrome with the same Google account
+    that holds your Koin Vault passkey. Your browser may ask for its Password Manager PIN.</p>
+  <button class="ghost wide" id="btn-phone-signin" type="button" disabled>Use phone / QR code</button>
+  <p class="hint">Choose <strong>Use a phone or tablet</strong> in the browser’s passkey window.
+    Scan its QR code with your phone’s camera, then unlock your phone.
+    Keep both devices nearby with Bluetooth on.</p>
+  <details>
+    <summary class="hint">Only seeing a USB security key?</summary>
+    <p class="hint">A USB key is optional. Choose <strong>Other options</strong> or
+      <strong>Try another way</strong> in the browser prompt to find the phone option.
+      If it is unavailable, open Koin Vault in an updated Chrome browser with Bluetooth enabled,
+      or choose <strong>Use a saved passkey</strong> above.</p>
+    <p class="hint">The passkey must belong to <strong>koinvault.app</strong>. A Google login
+      alone cannot open the wallet, and a passkey for wallet.usekoinos.com stays on that site.</p>
+  </details>
+  <button class="ghost wide" id="btn-phone-create" type="button" disabled>Create a new wallet</button>
   <p class="hint">Already have a KOIN Vault account? Choose sign in. Creating an account gives you a new wallet address.</p>
 </div>
 

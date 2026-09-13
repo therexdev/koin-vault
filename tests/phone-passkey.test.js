@@ -32,7 +32,8 @@ const script = fs.readFileSync(path.join(__dirname, '../public/js/passkey.js'), 
   assert.equal(passkey.supported(), true); assert.equal(await passkey.platformReady(), false);
   const created = await passkey.createCredential({ usePhone: true });
   assert.equal(requests.at(-1).hints[0], 'hybrid');
-  assert.equal(requests.at(-1).authenticatorSelection.authenticatorAttachment, 'cross-platform');
+  assert.equal(requests.at(-1).authenticatorSelection.authenticatorAttachment, undefined, 'Phone preference must not exclude synced passkeys');
+  assert.equal(requests.at(-1).timeout, 120000, 'Allow time to scan the phone QR code');
   assert.equal(requests.at(-1).authenticatorSelection.userVerification, 'required');
   assert.equal(requests.at(-1).authenticatorSelection.residentKey, 'required');
   assert.equal(requests.at(-1).pubKeyCredParams[0].alg, -7);
@@ -49,6 +50,10 @@ const script = fs.readFileSync(path.join(__dirname, '../public/js/passkey.js'), 
   await passkey.identify(true, { usePhone: true });
   assert.equal(requests.at(-1).allowCredentials.length, 0, 'Phone sign-in discovers the phone credential, ignoring stale desktop IDs');
   assert.equal(requests.at(-1).rpId, 'koinvault.app');
+  await passkey.identify(true, { usePhone: false });
+  assert.equal(requests.at(-1).hints, undefined, 'The saved-passkey choice overrides an earlier phone preference');
+  assert.equal(requests.at(-1).allowCredentials.length, 0, 'All synced passkeys remain discoverable');
+  assert.equal(requests.at(-1).timeout, 120000);
   const count = requests.filter(r => r.method === 'create').length;
   fail = true; await assert.rejects(passkey.identify(true, { usePhone: true }), { name: 'NotAllowedError' });
   assert.equal(requests.filter(r => r.method === 'create').length, count, 'A cancelled phone sign-in never creates a key');

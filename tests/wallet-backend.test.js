@@ -51,7 +51,7 @@ const listen = async server => { server.listen(0, '127.0.0.1'); await once(serve
     if (req.url === '/api/redirect') { res.writeHead(302, { Location: 'https://evil.example' }); return res.end(); }
     res.setHeader('Content-Type', 'application/json');
     res.setHeader('Access-Control-Allow-Origin', 'https://ouro.lifestyle');
-    if (req.url.endsWith('/api/config')) return res.end(JSON.stringify({ ok: true, demo: false, rpId: 'wallet.usekoinos.com', features: { buy: !req.url.startsWith('/android') } }));
+    if (req.url.endsWith('/api/config')) return res.end(JSON.stringify({ ok: true, demo: false, rpId: 'wallet.usekoinos.com', maxCredentialsPerAccount: 32, features: { buy: !req.url.startsWith('/android') } }));
     if (req.url === '/api/dapp/create') return res.end(JSON.stringify({ ok: true, uri: upstreamUrl + '/?connect=session&secret=fixture' }));
     res.end(JSON.stringify({ ok: true, address: 'existing-account-address' }));
   });
@@ -63,6 +63,7 @@ const listen = async server => { server.listen(0, '127.0.0.1'); await once(serve
       const res = await fetch(proxyUrl + prefix + '/api/config');
       const value = await res.json();
       assert.equal(value.demo, false); assert.equal(value.rpId, 'koinvault.app');
+      assert.equal(value.maxCredentialsPerAccount, 32, 'Forward the shared backend capacity unchanged');
       assert.equal(value.features.buy, !prefix); assert.equal(res.headers.get('cache-control'), 'no-store');
     }
     const body = JSON.stringify({ credentialId: 'old-key', arbitrary: 'preserve exact request' });

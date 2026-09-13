@@ -22,14 +22,15 @@ const source = fs.readFileSync(path.join(__dirname, '../public/js/app.js'), 'utf
     return elements.get(id);
   }
   const context = vm.createContext({
-    $: element, ADDRESS: 'test-account-address', PAINT_GEN: 0, CREDENTIALS: [],
+    $: element, ADDRESS: 'test-account-address', PAINT_GEN: 0, CREDENTIALS: [], GENERATING_KIT: false,
+    credentialLimit: () => 32,
     PENDING_KIT: null, RELEASE_KIT_DOWNLOAD: null,
     Recovery: { ...Recovery, generate: async () => {
       generated++;
       if (finishGeneration !== undefined) await new Promise(resolve => { finishGeneration = resolve; });
       return Recovery.generate();
     } },
-    bsay() {}, renderCredentials() {},
+    bsay() {}, renderCredentials() { element('#btn-make-kit').disabled = !!context.PENDING_KIT || context.GENERATING_KIT; },
     registerCredential: async credential => {
       if (failActivation) throw new Error('Cancelled');
       registrations.push(credential);
@@ -76,6 +77,8 @@ const source = fs.readFileSync(path.join(__dirname, '../public/js/app.js'), 'utf
   blockAutoDownload = false;
   element('#btn-kit-download').click();
   const manual = Recovery.parseKit(await downloads.at(-1).content);
+  assert.notEqual(downloads.at(-1).filename, downloads[0].filename, 'Different kits for the same wallet must have different filenames');
+  assert.notEqual(manual.credentialId, kit.credentialId, 'Another kit adds a fresh credential');
   assert.equal(manual.privateKey, context.PENDING_KIT.privateKey);
   const manualUrl = element('#btn-kit-download').href;
   await click('#btn-kit-cancel');
@@ -85,6 +88,7 @@ const source = fs.readFileSync(path.join(__dirname, '../public/js/app.js'), 'utf
 
   finishGeneration = null;
   const preparing = click('#btn-make-kit');
+  context.renderCredentials();
   await click('#btn-make-kit'); assert.equal(generated, 3, 'Double click cannot create competing kits');
   context.ADDRESS = null; context.PAINT_GEN++;
   finishGeneration(); await preparing;

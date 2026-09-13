@@ -61,10 +61,12 @@ const Passkey = (() => {
           displayName: 'Koinos Smart Account',
         },
         challenge: crypto.getRandomValues(new Uint8Array(32)),
+        timeout: 120000,
         pubKeyCredParams: [{ type: 'public-key', alg: -7 }],
         ...(usePhone ? { hints: ['hybrid'] } : {}),
         authenticatorSelection: {
-          ...(usePhone ? { authenticatorAttachment: 'cross-platform' } : {}),
+          // Prefer the phone UI without excluding a synced password manager.
+          // Older browsers may interpret cross-platform as a USB security key.
           residentKey: 'required',
           userVerification: 'required',
         },
@@ -112,6 +114,7 @@ const Passkey = (() => {
     const cred = await navigator.credentials.get({
       publicKey: {
         challenge: challengeBytes,
+        timeout: 120000,
         rpId: RP_ID,
         userVerification: 'required',
         ...(usePhone ? { hints: ['hybrid'] } : {}),

@@ -39,6 +39,15 @@ new site, remove that override to use the shared backend. The original backend
 must leave this variable unset or use `local`; do not point it back at the new
 frontend, which would create a forwarding loop.
 
+## Recovery capacity rollout
+
+Deploy the shared backend in `therexdev/koinos-bio-wallet` and the frontend in
+`therexdev/koin-vault`. Both repositories default `MAX_CREDENTIALS_PER_ACCOUNT`
+to 32. If hosting explicitly sets that variable to 6, change it to 32 to gain the
+extra slots. The new UI follows the limit returned by `/api/config`; while an
+older backend is deployed it conservatively assumes six. The proxy preserves
+the backend's capacity value. No account records or existing keys are replaced.
+
 ## Account access
 
 Existing account records stay in the original data folder. Original passkeys
