@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <string name="app_name">KOIN Vault</string>
+  <string name="host_name">koinvault.app</string>
+  <string name="launch_url">https://koinvault.app/android/</string>
+  <string name="web_manifest_url">https://koinvault.app/android/manifest.webmanifest</string>
+  <string name="provider_authority">wallet.koinos.app.fileprovider</string>
+  <!-- The app's half of Digital Asset Links. The site's half is served at
+       https://koinvault.app/.well-known/assetlinks.json -->
+  <string name="asset_statements">[{ \"relation\": [\"delegate_permission/common.handle_all_urls\"], \"target\": { \"namespace\": \"web\", \"site\": \"https://koinvault.app\" } }]</string>
+  <string name="shortcut_receive_short">Receive</string>
+  <string name="shortcut_receive_long">Show my address and QR code</string>
+  <string name="shortcut_send_short">Send</string>
+  <string name="shortcut_send_long">Send KOIN</string>
+</resources>

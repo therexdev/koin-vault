@@ -1,0 +1,64 @@
+plugins { id 'com.android.application' }
+
+/* Release signing comes from the environment (CI secrets or a local
+   export). Without it the release build is signed with the debug key —
+   installable for testing, but Digital Asset Links then verify against
+   the debug certificate, so the URL bar stays until the real key is used. */
+def keystorePath = System.getenv('ANDROID_KEYSTORE_FILE')
+def hasReleaseKey = keystorePath != null && new File(keystorePath).exists()
+/* Computed up front: in the Groovy DSL `versionCode (expr).toInteger()`
+   parses as `(versionCode(expr)).toInteger()`, which is null. */
+def envVersionCode = (System.getenv('ANDROID_VERSION_CODE') ?: '1').toInteger()
+def envVersionName = System.getenv('ANDROID_VERSION_NAME') ?: '1.0.0'
+/* The debug key at a known path (CI caches it so builds keep one identity;
+   the plugin's default location varies between machines). Standard debug
+   credentials, as Android Studio uses. */
+def debugKeystore = System.getenv('ANDROID_DEBUG_KEYSTORE') ?: "${System.getProperty('user.home')}/.android/debug.keystore"
+
+android {
+  namespace = 'wallet.koinos.app'
+  compileSdk = 36
+
+  defaultConfig {
+    applicationId = 'wallet.koinos.app'
+    minSdk = 23                 // Android 6+; the TWA itself needs Chrome 72+
+    targetSdk = 36   // Play's floor from Aug 2026; below this it refuses the upload
+    versionCode = envVersionCode
+    versionName = envVersionName
+  }
+
+  signingConfigs {
+    debug {
+      storeFile = file(debugKeystore)
+      storePassword = 'android'
+      keyAlias = 'androiddebugkey'
+      keyPassword = 'android'
+    }
+    if (hasReleaseKey) {
+      release {
+        storeFile = file(keystorePath)
+        storePassword = System.getenv('ANDROID_KEYSTORE_PASSWORD')
+        keyAlias = System.getenv('ANDROID_KEY_ALIAS')
+        keyPassword = System.getenv('ANDROID_KEY_PASSWORD')
+      }
+    }
+  }
+
+  buildTypes {
+    release {
+      minifyEnabled = false
+      signingConfig = hasReleaseKey ? signingConfigs.release : signingConfigs.debug
+    }
+  }
+
+  compileOptions {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+  }
+}
+
+dependencies {
+  // Google's TWA launcher: opens the site in Chrome, full screen, verified.
+  implementation 'com.google.androidbrowserhelper:androidbrowserhelper:2.5.0'
+  testImplementation 'junit:junit:4.13.2'
+}

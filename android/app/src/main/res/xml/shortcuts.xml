@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The APK supports wallet operations only; the PWA keeps its Buy shortcut. -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+  <shortcut android:shortcutId="receive" android:enabled="true" android:icon="@mipmap/ic_launcher"
+      android:shortcutShortLabel="@string/shortcut_receive_short" android:shortcutLongLabel="@string/shortcut_receive_long">
+    <intent android:action="android.intent.action.MAIN"
+        android:targetPackage="wallet.koinos.app"
+        android:targetClass="wallet.koinos.app.WalletLauncherActivity"
+        android:data="https://koinvault.app/android/?open=receive"/>
+  </shortcut>
+  <shortcut android:shortcutId="send" android:enabled="true" android:icon="@mipmap/ic_launcher"
+      android:shortcutShortLabel="@string/shortcut_send_short" android:shortcutLongLabel="@string/shortcut_send_long">
+    <intent android:action="android.intent.action.MAIN"
+        android:targetPackage="wallet.koinos.app"
+        android:targetClass="wallet.koinos.app.WalletLauncherActivity"
+        android:data="https://koinvault.app/android/?open=send"/>
+  </shortcut>
+</shortcuts>

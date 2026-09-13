@@ -1,0 +1,1 @@
+export const VERIFIER_CONTRACT_ID = "1DiZuvY2TMXoBYEJCZ7sEjymSyDq8ubp7g";

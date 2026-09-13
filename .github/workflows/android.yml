@@ -1,0 +1,258 @@
+# Builds the Android app (a Trusted Web Activity around koinvault.app)
+# and publishes the APK/AAB as workflow artifacts. Runs on pushes that touch
+# the Android project and on demand.
+#
+# Signing: add these repository secrets to get a release-signed build —
+#   ANDROID_KEYSTORE_BASE64   base64 of your .jks   (base64 -w0 release.jks)
+#   ANDROID_KEYSTORE_PASSWORD
+#   ANDROID_KEY_ALIAS
+#   ANDROID_KEY_PASSWORD
+# Without them the build is signed with a debug key: fine for sideloading
+# and testing, not for Play, and the site's assetlinks.json will not match
+# it (so the URL bar shows). That debug key is cached between runs so a
+# newer build still installs over an older one; if the cache is evicted a
+# fresh key appears and phones must uninstall the old build once. The log
+# and the job summary print the SHA-256 fingerprint of whichever
+# certificate signed the build — the value for ANDROID_SHA256_FINGERPRINTS.
+#
+# Every successful build on main also refreshes the "android-latest"
+# pre-release, so the newest APK is always at
+#   https://github.com/<owner>/<repo>/releases/download/android-latest/bio-wallet.apk
+# (a raw .apk a phone can install directly, unlike the zipped artifact).
+name: Android app
+
+on:
+  push:
+    branches: [main]
+    paths: ['android/**', '.github/workflows/android.yml']
+  pull_request:
+    paths: ['android/**', '.github/workflows/android.yml']
+  workflow_dispatch:
+    inputs:
+      versionName:
+        description: 'Version name (e.g. 1.2.0)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      HAS_RELEASE_KEY: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+      ANDROID_VERSION_CODE: ${{ github.run_number }}
+      ANDROID_VERSION_NAME: ${{ github.event.inputs.versionName != '' && github.event.inputs.versionName || format('1.0.{0}', github.run_number) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-36 build-tools;36.0.0 platform-tools'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+
+      # Play rejects anything below API 36, and the toolchain has to be able
+      # to reach it: AGP 8.11 for the compile, Gradle 8.13 for that AGP, and
+      # the platform actually installed. Checking here names whichever is
+      # missing instead of leaving it in a Gradle stack trace.
+      - name: The toolchain can reach API 36
+        run: |
+          want=36
+          got=$(grep -oP 'compileSdk\s*=\s*\K[0-9]+' android/app/build.gradle)
+          tgt=$(grep -oP 'targetSdk\s*=\s*\K[0-9]+' android/app/build.gradle)
+          agp=$(grep -oP "com.android.application' version '\K[^']+" android/build.gradle)
+          echo "compileSdk=$got targetSdk=$tgt AGP=$agp gradle=$(gradle --version | awk '/^Gradle/{print $2}')"
+          [ "$tgt" -ge "$want" ] || { echo "::error::targetSdk is $tgt; Play requires at least $want."; exit 1; }
+          [ -d "$ANDROID_HOME/platforms/android-$want" ] || {
+            echo "::error::Android platform $want is not installed — the setup-android packages line needs 'platforms;android-$want'."; exit 1; }
+          echo "Platform $want present at $ANDROID_HOME/platforms/android-$want"
+
+
+      - name: Keep the debug signing key between builds
+        if: env.HAS_RELEASE_KEY != 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: android-debug-keystore-v1
+
+      - name: Debug signing key (created once, then restored from the cache)
+        if: env.HAS_RELEASE_KEY != 'true'
+        run: |
+          mkdir -p "$HOME/.android"
+          if [ ! -f "$HOME/.android/debug.keystore" ]; then
+            keytool -genkeypair -keystore "$HOME/.android/debug.keystore" -storepass android -keypass android \
+              -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+            echo "Generated a new debug keystore (phones with an older debug-signed build must uninstall it once)."
+          else
+            echo "Reusing the cached debug keystore."
+          fi
+          echo "ANDROID_DEBUG_KEYSTORE=$HOME/.android/debug.keystore" >> "$GITHUB_ENV"
+
+      # The keystore arrives as base64 pasted by a human out of a terminal,
+      # which is where this goes wrong. Two failures are worth naming here
+      # rather than letting Gradle hit them minutes later as a Java stack
+      # trace ("toDerInputStream rejects tag type -46"):
+      #   - a paste that picked up spaces or indentation. base64 tolerates
+      #     newlines but not spaces, so every space is stripped first: that
+      #     is a badly copied key, not a different one.
+      #   - a paste cut short. That decodes with NO error at all and yields
+      #     a corrupt file, so the only way to catch it is to ask keytool
+      #     whether the result is really a keystore.
+      - name: Release keystore from secrets
+        if: env.HAS_RELEASE_KEY == 'true'
+        env:
+          B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STOREPASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEYPASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          # Two of the four were never secrets, and demanding them was the
+          # defect: four things to set is four chances to set three.
+          #   - the alias is a NAME, not a credential, and ours is always
+          #     'biowallet';
+          #   - the key password cannot differ from the store password in a
+          #     PKCS12 keystore, which is what keytool has made since JDK 9.
+          # So both are derived when unset, and only the keystore and its
+          # password are actually required.
+          ALIAS=${ALIAS:-biowallet}
+          KEYPASS=${KEYPASS:-$STOREPASS}
+          MISSING=
+          [ -n "$B64" ]       || MISSING="$MISSING ANDROID_KEYSTORE_BASE64"
+          [ -n "$STOREPASS" ] || MISSING="$MISSING ANDROID_KEYSTORE_PASSWORD"
+          if [ -n "$MISSING" ]; then
+            echo "::error::Not set:$MISSING. Only these two are needed — the alias defaults to 'biowallet' and the key password to the keystore password. Run 'bash android/tools/setup-signing.sh' in a codespace to set them with nothing to copy."
+            exit 1
+          fi
+          KS="$RUNNER_TEMP/release.jks"
+          printf '%s' "$B64" | tr -d '[:space:]' | base64 -d > "$KS" 2>/dev/null || true
+          SIZE=$(stat -c%s "$KS" 2>/dev/null || echo 0)
+          # A password copied out of a terminal very often brings a trailing
+          # newline or space with it, which is not a different password —
+          # just a worse copy of the same one. The generated password has no
+          # spaces in it, so trimming the ends can only help.
+          STOREPASS=$(printf '%s' "$STOREPASS" | tr -d '[:space:]')
+          KEYPASS=$(printf '%s' "$KEYPASS" | tr -d '[:space:]')
+          ALIAS=$(printf '%s' "$ALIAS" | tr -d '[:space:]')
+          if ! keytool -list -keystore "$KS" -storepass "$STOREPASS" > /tmp/kt.out 2>&1; then
+            echo "::group::keytool said"; cat /tmp/kt.out; echo "::endgroup::"
+            if grep -qi 'password was incorrect\|keystore password' /tmp/kt.out; then
+              echo "::error::The keystore decoded ($SIZE bytes) but ANDROID_KEYSTORE_PASSWORD is wrong. It must be the password make-keystore.sh printed, pasted into BOTH password secrets."
+            else
+              echo "::error::ANDROID_KEYSTORE_BASE64 did not decode to a usable keystore ($SIZE bytes). A base64 paste that was cut short decodes with no error and produces exactly this. Re-copy the WHOLE single line — in the codespace, 'bash android/tools/print-keystore-secret.sh' writes it to a file you can open and select all of."
+            fi
+            exit 1
+          fi
+          if ! grep -qiF "$ALIAS," /tmp/kt.out; then
+            echo "::group::aliases in this keystore"; cat /tmp/kt.out; echo "::endgroup::"
+            echo "::error::ANDROID_KEY_ALIAS is '$ALIAS', which is not in the keystore (see the group above for what is). make-keystore.sh uses 'biowallet'."
+            exit 1
+          fi
+          # The key password is a SECOND secret, and Gradle only discovers a
+          # mismatch deep in packageRelease. keytool cannot check it here:
+          # this is a PKCS12 store (keytool's default since JDK 9), where the
+          # key password IS the store password and -keypass is accepted and
+          # ignored on a list — so asking it would give a false all-clear.
+          # Comparing the two secrets is what actually catches the paste.
+          if [ "$KEYPASS" != "$STOREPASS" ]; then
+            echo "::error::ANDROID_KEY_PASSWORD differs from ANDROID_KEYSTORE_PASSWORD. This keystore is PKCS12, where they must be identical — make-keystore.sh prints ONE password to paste into both secrets."
+            exit 1
+          fi
+          echo "Keystore decoded and opened: $SIZE bytes, alias '$ALIAS'."
+          # The trimmed values, so the build uses what was just verified.
+          echo "ANDROID_KEYSTORE_FILE=$KS" >> "$GITHUB_ENV"
+          echo "ANDROID_KEYSTORE_PASSWORD=$STOREPASS" >> "$GITHUB_ENV"
+          echo "ANDROID_KEY_ALIAS=$ALIAS" >> "$GITHUB_ENV"
+          echo "ANDROID_KEY_PASSWORD=$KEYPASS" >> "$GITHUB_ENV"
+
+      - name: Build APK and App Bundle
+        working-directory: android
+        run: gradle --no-daemon testReleaseUnitTest assembleRelease bundleRelease
+
+      - name: Rename outputs
+        run: |
+          mkdir -p out
+          cp android/app/build/outputs/apk/release/app-release.apk "out/bio-wallet-${ANDROID_VERSION_NAME}.apk"
+          cp android/app/build/outputs/bundle/release/app-release.aab "out/bio-wallet-${ANDROID_VERSION_NAME}.aab"
+
+      - name: Verify the APK signature
+        run: |
+          APKSIGNER=$(ls -d "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)
+          "$APKSIGNER" verify --verbose --print-certs "out/bio-wallet-${ANDROID_VERSION_NAME}.apk" | grep -E 'Verified using|Verifies|SHA-256|WARNING' || true
+          "$APKSIGNER" verify "out/bio-wallet-${ANDROID_VERSION_NAME}.apk"
+
+      - name: Signing certificate fingerprint (for assetlinks.json)
+        run: |
+          FP=$(keytool -printcert -jarfile out/bio-wallet-${ANDROID_VERSION_NAME}.apk | grep -m1 'SHA256:' | sed 's/.*SHA256: *//')
+          echo "Signing certificate SHA-256: $FP"
+          echo "ANDROID_SHA256_FINGERPRINTS=$FP"
+          KIND=$([ "$HAS_RELEASE_KEY" = "true" ] && echo "release key" || echo "DEBUG key — add the signing secrets for a real build")
+          {
+            echo "## KOIN Vault Android build ${ANDROID_VERSION_NAME} (versionCode ${ANDROID_VERSION_CODE})"
+            echo
+            echo "Signed with the **${KIND}**."
+            echo
+            echo "SHA-256 fingerprint of the signing certificate:"
+            echo
+            echo '```'
+            echo "$FP"
+            echo '```'
+            echo
+            echo "Set this on the wallet server so Chrome verifies the app and hides the URL bar:"
+            echo
+            echo '```'
+            echo "ANDROID_SHA256_FINGERPRINTS=$FP"
+            echo '```'
+            echo
+            echo "Then check https://koinvault.app/.well-known/assetlinks.json contains it."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bio-wallet-android-${{ env.ANDROID_VERSION_NAME }}
+          path: out/*
+          if-no-files-found: error
+
+      # The newest build, as a raw APK at a link that never changes.
+      - name: Refresh the android-latest pre-release
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp "out/bio-wallet-${ANDROID_VERSION_NAME}.apk" out/bio-wallet.apk
+          git tag -f android-latest
+          git push -f origin android-latest
+          KIND=$([ "$HAS_RELEASE_KEY" = "true" ] && echo "the release key" || echo "a debug key (set the signing secrets for a real one)")
+          printf '%s\n' \
+            "Latest build of the KOIN Vault Android app from main: version ${ANDROID_VERSION_NAME}, signed with ${KIND}." \
+            "" \
+            "**Install:** download bio-wallet.apk on the phone, open it, and allow installs from your browser or file manager when asked." \
+            "" \
+            "**\"App not installed\"?** Usually one of these:" \
+            "- a build signed with a different key is already on the phone: uninstall KOIN Vault, then install again;" \
+            "- you opened the .aab file: that one is for the Play Store, phones install the .apk;" \
+            "- the download was cut short: download it again;" \
+            "- the phone blocked the install: Settings, Apps, Special app access, Install unknown apps." \
+            > "$RUNNER_TEMP/notes.md"
+          if gh release view android-latest >/dev/null 2>&1; then
+            gh release edit android-latest --prerelease --title "KOIN Vault for Android — latest build (${ANDROID_VERSION_NAME})" --notes-file "$RUNNER_TEMP/notes.md"
+          else
+            gh release create android-latest --prerelease --title "KOIN Vault for Android — latest build (${ANDROID_VERSION_NAME})" --notes-file "$RUNNER_TEMP/notes.md"
+          fi
+          gh release upload android-latest out/bio-wallet.apk "out/bio-wallet-${ANDROID_VERSION_NAME}.apk" "out/bio-wallet-${ANDROID_VERSION_NAME}.aab" --clobber
+          echo "APK: https://github.com/${GITHUB_REPOSITORY}/releases/download/android-latest/bio-wallet.apk" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Attach to a versioned release (android-v* tags only)
+        if: startsWith(github.ref, 'refs/tags/android-v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: out/*
