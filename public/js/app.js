@@ -282,11 +282,16 @@
   /* ---------------- landing: THE button ---------------- */
   const go = $('#btn-go');
   let ENTERING = false;
+  let LOCAL_AUTHENTICATOR = false;
   async function refreshLandingSupport() {
-    const ok = await Passkey.platformReady();
+    const ok = Passkey.supported();
+    LOCAL_AUTHENTICATOR = ok && await Passkey.platformReady();
     go.disabled = !ok || ENTERING;
+    $('#btn-phone-signin').disabled = !ok || ENTERING;
+    $('#btn-phone-create').disabled = !ok || ENTERING;
     $('#no-passkey').hidden = ok;
     $('#alt-unlock').hidden = !ok;
+    $('#phone-option').hidden = !ok;
   }
   await refreshLandingSupport();
 
@@ -296,8 +301,8 @@
     return (e && e.message) || 'Passkey ceremony failed';
   }
 
-  async function signIn(pickAnother = false) {
-    const credentialId = await Passkey.identify(pickAnother);
+  async function signIn(pickAnother = false, usePhone) {
+    const credentialId = await Passkey.identify(pickAnother, { usePhone });
     const who = await api('/api/whoami', { credentialId });
     ADDRESS = who.address; storeAddr(ADDRESS);
     RECOVERY = null;
@@ -306,11 +311,11 @@
     show('#view-wallet');
   }
 
-  async function createAccount() {
+  async function createAccount(usePhone = false) {
     let made;
-    try { made = await Passkey.createCredential(); }
+    try { made = await Passkey.createCredential({ usePhone }); }
     catch (e) {
-      if (e && e.name === 'InvalidStateError') return signIn(); // this device already has our passkey
+      if (e && e.name === 'InvalidStateError') return signIn(false, usePhone);
       throw e;
     }
     const rec = await api('/api/create-account', {
@@ -323,24 +328,39 @@
     show('#view-wallet');
   }
 
-  async function enter(makeNew, pickAnother = false) {
+  async function enter(makeNew, pickAnother = false, usePhone) {
     if (ENTERING) return;
     ENTERING = true;
     go.disabled = true;
+    $('#btn-phone-signin').disabled = true;
+    $('#btn-phone-create').disabled = true;
+    UI.setPasskeyBusy(true);
+    UI.closeSheet({ immediate: true, restoreFocus: false });
     try {
-      if (makeNew) await createAccount();
-      else await signIn(pickAnother);
+      if (makeNew) await createAccount(usePhone);
+      else await signIn(pickAnother, usePhone);
     } catch (e) {
       if (e.status === 404) {
         alertLine('No wallet was found for that passkey. Choose another saved passkey, or use a registered recovery kit.');
       } else alertLine(friendly(e));
     } finally {
       ENTERING = false;
+      UI.setPasskeyBusy(false);
       await refreshLandingSupport();
     }
   }
 
-  go.addEventListener('click', () => enter(!Passkey.remembered()));
+  function usePhone() {
+    if (ENTERING || !Passkey.supported()) return;
+    UI.openSheet('sheet-phone');
+  }
+  go.addEventListener('click', () => {
+    if (!LOCAL_AUTHENTICATOR && !Passkey.remembered()) return usePhone();
+    return enter(!Passkey.remembered());
+  });
+  $('#btn-use-phone').addEventListener('click', (e) => { e.preventDefault(); usePhone(); });
+  $('#btn-phone-signin').addEventListener('click', () => enter(false, true, true));
+  $('#btn-phone-create').addEventListener('click', () => enter(true, false, true));
   $('#btn-unlock-existing').addEventListener('click', (e) => { e.preventDefault(); return enter(false, true); });
   $('#btn-open-recover').addEventListener('click', (e) => { e.preventDefault(); show('#view-recover'); });
   $('#btn-recover-back').addEventListener('click', (e) => { e.preventDefault(); show('#view-landing'); });

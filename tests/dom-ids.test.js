@@ -22,7 +22,7 @@ const html = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'),
 const IDS = {
   'app.js (existing)': [
     'demo-note', 'sym', 'sym2', 'btn-signout', 'btn-go', 'no-passkey', 'alt-unlock',
-    'connection-status', 'btn-unlock-existing', 'btn-open-recover', 'btn-recover-back', 'btn-recover', 'addr',
+    'phone-option', 'btn-use-phone', 'btn-phone-signin', 'btn-phone-create', 'sheet-phone', 'connection-status', 'btn-unlock-existing', 'btn-open-recover', 'btn-recover-back', 'btn-recover', 'addr',
     'btn-add-passkey', 'btn-backup-activate', 'btn-backup-cancel', 'btn-make-kit', 'btn-kit-activate',
     'btn-kit-download', 'kit-preview', 'btn-kit-cancel', 'btn-rekey', 'btn-send', 'btn-scan', 'btn-send-all', 'view-landing', 'view-wallet',
     'view-recover', 'activation', 'kit-input', 'recover-status', 'bal', 'mana', 'cred-list', 'kit-armed',
@@ -75,7 +75,7 @@ const IDS = {
     'ios-install-note', 'install-generic', 'installed-note', 'offline-ready', 'how-it-works', 'about-prices', 'signout-note',
   ],
   'ui.js (install sheet)': [
-    'sheet-install', 'btn-install-close', 'install-title', 'install-sub', 'install-steps-ios', 'install-steps-android',
+    'btn-install-landing', 'install-steps-desktop', 'sheet-install', 'btn-install-close', 'install-title', 'install-sub', 'install-steps-ios', 'install-steps-android',
     'btn-install-now', 'btn-install-later',
   ],
 };

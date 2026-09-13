@@ -15,7 +15,7 @@ const template = fs.readFileSync(path.join(root, 'public/index.html'), 'utf8');
   assert.throws(() => androidHtml(template.replace('<!-- WEB_ONLY_END -->', '')), /incomplete/);
   const client = fs.readFileSync(path.join(root, 'public/js/client.js'), 'utf8');
   for (const [pathname, marker, expected] of [['/', '', true], ['/', 'android', false], ['/android/', '', false], ['/android/index.html', '', false]]) {
-    const ctx = vm.createContext({ document: { documentElement: { dataset: { walletClient: marker } } }, location: { pathname } });
+    const ctx = vm.createContext({ document: { documentElement: { dataset: { walletClient: marker } } }, location: { pathname }, window: { addEventListener() {} } });
     vm.runInContext(client, ctx);
     assert.equal(vm.runInContext('WalletClient.canBuy', ctx), expected);
     assert.equal(vm.runInContext("WalletClient.apiPath('/api/config')", ctx), expected ? '/api/config' : '/android/api/config');

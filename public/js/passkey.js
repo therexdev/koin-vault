@@ -15,6 +15,7 @@
 
 const Passkey = (() => {
   const CRED_KEY = 'bw_smart_cred';
+  const PHONE_KEY = 'bw_smart_phone_cred';
 
   let RP_ID = location.hostname;
   const setRpId = (id) => { if (id) RP_ID = String(id); };
@@ -32,14 +33,24 @@ const Passkey = (() => {
     .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
   const fromB64u = (s) => Uint8Array.from(atob(String(s).replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
 
-  function storeId(rawId) { try { localStorage.setItem(CRED_KEY, b64u(rawId)); } catch (_) {} }
+  function storeId(rawId, usePhone = false) {
+    try {
+      const id = b64u(rawId);
+      localStorage.setItem(CRED_KEY, id);
+      if (usePhone) localStorage.setItem(PHONE_KEY, id);
+      else localStorage.removeItem(PHONE_KEY);
+    } catch (_) {}
+  }
+  function phonePreferred() {
+    try { return !!storedId() && localStorage.getItem(PHONE_KEY) === storedId(); } catch (_) { return false; }
+  }
   function storedId() { try { return localStorage.getItem(CRED_KEY); } catch (_) { return null; } }
-  function forget() { try { localStorage.removeItem(CRED_KEY); } catch (_) {} }
+  function forget() { try { localStorage.removeItem(CRED_KEY); localStorage.removeItem(PHONE_KEY); } catch (_) {} }
   const remembered = () => !!storedId();
 
   /** Create the credential that will OWN the smart account. ES256 only —
       it's the one algorithm the chain's P-256 verifier speaks. */
-  async function createCredential() {
+  async function createCredential({ usePhone = false } = {}) {
     const existing = storedId();
     const cred = await navigator.credentials.create({
       publicKey: {
@@ -51,8 +62,9 @@ const Passkey = (() => {
         },
         challenge: crypto.getRandomValues(new Uint8Array(32)),
         pubKeyCredParams: [{ type: 'public-key', alg: -7 }],
+        ...(usePhone ? { hints: ['hybrid'] } : {}),
         authenticatorSelection: {
-          authenticatorAttachment: 'platform',
+          ...(usePhone ? { authenticatorAttachment: 'cross-platform' } : {}),
           residentKey: 'required',
           userVerification: 'required',
         },
@@ -65,7 +77,7 @@ const Passkey = (() => {
     }
     const spki = resp.getPublicKey();
     if (!spki) throw new Error('The authenticator did not hand over a public key');
-    storeId(cred.rawId);
+    storeId(cred.rawId, usePhone && cred.authenticatorAttachment !== 'platform');
     return { credentialId: b64u(cred.rawId), publicKey: b64u(spki) };
   }
 
@@ -96,16 +108,17 @@ const Passkey = (() => {
 
   /** A WebAuthn assertion over the given challenge bytes. Empty allow-list
       opens the platform's picker (synced passkeys included). */
-  async function assert(challengeBytes, allowIds) {
+  async function assert(challengeBytes, allowIds, { usePhone = phonePreferred() } = {}) {
     const cred = await navigator.credentials.get({
       publicKey: {
         challenge: challengeBytes,
         rpId: RP_ID,
         userVerification: 'required',
+        ...(usePhone ? { hints: ['hybrid'] } : {}),
         allowCredentials: (allowIds || []).map((id) => ({ type: 'public-key', id: fromB64u(id) })),
       },
     });
-    storeId(cred.rawId);
+    storeId(cred.rawId, usePhone && cred.authenticatorAttachment !== 'platform');
     return {
       credentialId: b64u(cred.rawId),
       signature: new Uint8Array(cred.response.signature),
@@ -119,13 +132,13 @@ const Passkey = (() => {
       remembered credential is gone from this device (lost phone, stale
       browser data), fall back to the discoverable picker so any surviving
       credential — a backup passkey included — can answer. */
-  async function identify(pickAnother = false) {
+  async function identify(pickAnother = false, options = {}) {
     const id = pickAnother ? null : storedId();
     if (id) {
-      try { return (await assert(crypto.getRandomValues(new Uint8Array(32)), [id])).credentialId; }
+      try { return (await assert(crypto.getRandomValues(new Uint8Array(32)), [id], options)).credentialId; }
       catch (e) { if (!e || e.name !== 'NotAllowedError') throw e; }
     }
-    return (await assert(crypto.getRandomValues(new Uint8Array(32)), [])).credentialId;
+    return (await assert(crypto.getRandomValues(new Uint8Array(32)), [], options)).credentialId;
   }
 
   return { supported, platformReady, remembered, storedId, forget, setRpId, createCredential, createBackupCredential, assert, identify };

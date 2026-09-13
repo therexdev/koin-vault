@@ -23,7 +23,8 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
   assert.equal((await vm.runInContext('waitForConfig()', configContext)).demo, true, 'An explicitly configured demo remains supported');
 
   const elements = new Map(), calls = [], identified = [], addresses = [];
-  let failLookup = false, remembered = true, creations = 0, cancelled = false;
+  let failLookup = false, remembered = true, creations = 0, cancelled = false, local = true, capable = true;
+  const phoneOptions = [], sheets = [], busy = [];
   function element(id) {
     if (!elements.has(id)) elements.set(id, { hidden: true, disabled: false, textContent: '', listeners: {},
       addEventListener(type, fn) { this.listeners[type] = fn; }, insertAdjacentElement() {} });
@@ -32,9 +33,11 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
   const context = vm.createContext({
     $: element, document: { createElement: () => ({}) },
     ADDRESS: null, RECOVERY: null,
-    Passkey: { platformReady: async () => true, remembered: () => remembered,
-      identify: async choose => { identified.push(choose); return 'original-credential'; },
-      createCredential: async () => {
+    UI: { openSheet: id => sheets.push(id), closeSheet() {}, setPasskeyBusy: value => busy.push(value) },
+    Passkey: { supported: () => capable, platformReady: async () => local, remembered: () => remembered,
+      identify: async (choose, options) => { identified.push(choose); phoneOptions.push(options); return 'original-credential'; },
+      createCredential: async options => {
+        phoneOptions.push(options);
         if (cancelled) { const err = new Error('Prompt closed'); err.name = 'NotAllowedError'; throw err; }
         creations++; remembered = true; return { credentialId: 'new-credential', publicKey: 'fixture' };
       },
@@ -46,7 +49,7 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
   });
   const start = source.indexOf('  /* ---------------- landing:');
   const end = source.indexOf('  /* ---------------- recovery flow');
-  await vm.runInContext('(async () => {\n' + source.slice(start, end) + '\n})()', context);
+  await vm.runInContext('(async () => {\n' + source.slice(start, end) + '\nglobalThis.refresh = refreshLandingSupport;\n})()', context);
   const click = id => element(id).listeners.click({ preventDefault() {} });
   await click('#btn-go'); assert.equal(addresses.at(-1), 'original-account'); assert.equal(creations, 0);
   await click('#btn-unlock-existing'); assert.equal(identified.at(-1), true);
@@ -62,8 +65,28 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
   assert.equal(creations, 1); assert.equal(addresses.at(-1), 'new-account');
   assert.equal(calls.filter(c => c.route === '/api/create-account').length, 1);
   await click('#btn-go'); assert.equal(creations, 1, 'The same button signs in after creation');
+  remembered = false; local = false;
+  // Refresh the real capability handler without a local authenticator.
+  await context.refresh();
+  const beforePhone = creations;
+  await click('#btn-go');
+  assert.equal(element('#btn-go').disabled, false, 'A desktop without biometrics still supports phone passkeys');
+  assert.equal(sheets.at(-1), 'sheet-phone');
+  assert.equal(creations, beforePhone, 'Opening phone choices does not create an account');
+  await click('#btn-phone-signin');
+  assert.equal(phoneOptions.at(-1).usePhone, true); assert.equal(identified.at(-1), true);
+  assert.equal(creations, beforePhone);
+  failLookup = true;
+  await click('#btn-phone-signin'); assert.equal(creations, beforePhone, 'Unknown phone passkeys never trigger signup');
+  failLookup = false;
+  await click('#btn-phone-create'); assert.equal(creations, beforePhone + 1);
+  assert.equal(phoneOptions.at(-1).usePhone, true);
+  assert.equal(busy.at(-1), false);
+  capable = false;
+  await context.refresh();
+  assert.equal(element('#btn-go').disabled, true, 'Browsers without WebAuthn remain unsupported');
   const html = fs.readFileSync(path.join(__dirname, '../public/index.html'), 'utf8');
   assert.match(html, /id="btn-go"[^>]*>Create Account or Sign In<\/button>/);
   assert.ok(!html.includes('id="btn-create-account"'), 'Only one account entry button');
-  console.log('✓ Combined account button, saved-passkey picker, cancelled creation, safe failed sign-in, and configuration retries');
+  console.log('✓ Combined account button, saved-passkey picker, cancelled creation, safe failed sign-in, desktop phone choices, and configuration retries');
 })().catch(e => { console.error(e); process.exitCode = 1; });

@@ -724,3 +724,29 @@ download link for the same kit until activation or discard. A configuration
 outage displays a retrying connection message instead of claiming the wallet
 is in demo mode. Public Koinos and ETH health probes no longer
 block local initialization or sign-in configuration.
+
+
+## Installation and phone passkeys
+
+The landing page includes **Install KOIN Vault**, available before sign-in.
+The browser's install event is captured in the head script so slow application
+startup cannot lose it. Automatic navigation no longer snoozes the install
+sheet; only an explicit dismissal does. Historical `bw_installed` flags do not
+permanently hide the offer after uninstalling. When no native prompt is
+available, the button shows the browser's installation instructions. APK and
+standalone app windows do not show the PWA offer.
+
+**Use a phone** opens sign-in and account-creation choices. The app requests
+WebAuthn hybrid authentication so a supporting browser can display its phone
+pairing QR code. Keep Bluetooth enabled on both devices and use the phone's
+camera to scan the browser's code. Browser/OS support and wording vary; some
+platforms require selecting **Use a phone or tablet** first. The QR code and
+pairing are managed by the browser. No private key is copied to the desktop.
+
+A missing local authenticator no longer disables WebAuthn. Phone-backed
+credentials continue to request phone approval for transactions, with user
+verification required. Unknown or cancelled phone sign-in never falls back to
+creating another account. The main combined account button remains available.
+
+References: [PWA installation](https://web.dev/learn/pwa/installation-prompt),
+[WebAuthn hybrid hints](https://developer.chrome.com/blog/passkeys-updates-chrome-129).

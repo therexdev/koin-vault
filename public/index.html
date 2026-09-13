@@ -69,9 +69,14 @@
     <p class="note" id="connection-status" role="status">Connecting to wallet…</p>
     <p class="alt" id="alt-unlock" hidden>Have another saved passkey?
       <a href="#" id="btn-unlock-existing">Choose a saved passkey</a></p>
+    <p class="alt" id="phone-option" hidden>No fingerprint reader on this device?
+      <a href="#" id="btn-use-phone">Use a phone</a></p>
     <p class="alt">Lost every passkey? <a href="#" id="btn-open-recover">Recover with your kit</a></p>
-    <p class="unsupported" id="no-passkey" hidden>This browser has no biometric passkey support —
-      try a phone, or a browser with Face ID / fingerprint / Windows Hello.</p>
+    <!-- WEB_ONLY_START -->
+    <p class="alt"><button class="ghost" id="btn-install-landing" type="button" hidden><svg class="ic ic-18"><use href="#i-install"/></svg> Install KOIN Vault</button></p>
+    <!-- WEB_ONLY_END -->
+    <p class="unsupported" id="no-passkey" hidden>This browser cannot use passkeys.
+      Open KOIN Vault in a current version of Chrome, Edge or Safari, or use your recovery kit.</p>
     <p class="note" id="demo-note" hidden>Demo mode — no chain connected yet; the passkey flow is real, transactions simulate.</p>
   </section>
 
@@ -464,6 +469,22 @@
   </section>
 </main>
 
+<div class="sheet" id="sheet-phone" role="dialog" aria-modal="true" aria-labelledby="phone-title" tabindex="-1" hidden>
+  <button class="handle" type="button" aria-label="Close" data-close></button>
+  <button class="x" id="btn-phone-close" type="button" aria-label="Close" data-close><svg class="ic"><use href="#i-x"/></svg></button>
+  <h3 id="phone-title">Use your phone’s passkey</h3>
+  <p class="hint">Choose an option below, then select <strong>Use a phone or tablet</strong>
+    in your browser’s passkey window. Scan its QR code with your phone’s camera and
+    confirm with your fingerprint, face or device PIN.</p>
+  <p class="hint">Keep your phone nearby with Bluetooth on for both devices.
+    The wording and available options depend on your browser.</p>
+  <div class="btn-row">
+    <button class="cta small" id="btn-phone-signin" type="button" disabled>Sign in with phone</button>
+    <button class="ghost wide" id="btn-phone-create" type="button" disabled>Create with phone</button>
+  </div>
+  <p class="hint">Already have a KOIN Vault account? Choose sign in. Creating an account gives you a new wallet address.</p>
+</div>
+
 <!-- WEB_ONLY_START -->
 <!-- Add to Home Screen. Outside #view-wallet on purpose: it pops up on the
      landing page too, so the account can be created inside the installed app. -->
@@ -485,6 +506,9 @@
     <li><span class="n">2</span><span>Tap <strong>Add to Home screen</strong> or <strong>Install app</strong></span></li>
     <li><span class="n">3</span><span>Open <strong>KOIN Vault</strong> from your home screen</span></li>
   </ol>
+  <p class="hint" id="install-steps-desktop" hidden>In Chrome or Edge, use the install icon in the address bar
+    or choose <strong>Install KOIN Vault</strong> from the browser menu. In Safari on Mac, choose
+    <strong>File → Add to Dock</strong>. If installation is unavailable, try a current version of Chrome or Edge.</p>
   <button class="cta" id="btn-install-now" type="button" hidden><svg class="ic ic-18"><use href="#i-install"/></svg> Add to Home Screen</button>
   <button class="ghost wide" id="btn-install-later" type="button">Not now</button>
   <p class="hint center">Nothing changes on-chain. Your passkey opens the same account either way.</p>

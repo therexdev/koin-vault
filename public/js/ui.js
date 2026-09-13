@@ -31,7 +31,8 @@ const UI = (() => {
   let opener = null;          // the element that opened it — focus goes back there
   let closing = null;         // {el, timer, onEnd} while a close animation runs
   let toastTimer = null;
-  let installPrompt = null;   // a stashed beforeinstallprompt event
+  const installation = WalletClient.installation;
+  let passkeyBusy = false;
   let lastSats = {};          // row id → sats, to flash a row that grew
   let lastQr = null;          // "address|amount" last rendered in the receive sheet
   let tokenOpen = null;       // the row model shown in the token sheet
@@ -115,7 +116,8 @@ const UI = (() => {
     if (bar) bar.hidden = !inWallet;
     document.body.classList.toggle('in-wallet', inWallet);
     if (!inWallet) { closeSheet({ immediate: true, restoreFocus: false }); showTab('tab-home'); }
-    else { paintInstall(); paintOffline(); setTimeout(promptInstall, 2500); }
+    else { paintInstall(); paintOffline(); }
+    if (view !== '#view-recover') setTimeout(promptInstall, 1500);
   }
 
   /** Sign-out: forget the account, its numbers and its cached screen. */
@@ -208,7 +210,7 @@ const UI = (() => {
          sheet in the DOM: the timer is the guarantee, the event the fast path. */
       closing = { el: s, timer: setTimeout(finish, 300), onEnd };
     }
-    onSheetClose(s.id);
+    onSheetClose(s.id, opts);
     let back = opener; opener = null;
     /* The 30s repaint rebuilds the token rows; find the row by its id. */
     if (back && !document.contains(back) && back.dataset && back.dataset.id) back = document.querySelector(`#token-list .row[data-id="${CSS.escape(back.dataset.id)}"]`);
@@ -234,9 +236,16 @@ const UI = (() => {
       const inp = byId('add-token-addr'); if (inp) inp.value = '';
     }
   }
-  function onSheetClose(id) {
+  function onSheetClose(id, opts = {}) {
     if (id === 'sheet-token') tokenOpen = null;
-    if (id === 'sheet-install' && !lsGet(LS_INSTALLED)) snoozeInstall();
+    if (id === 'sheet-install') {
+      if (opts.dismissed) snoozeInstall();
+      else if (!opts.completed && !installation.installed) {
+        // Navigation during startup is not the user declining installation.
+        installPrompted = false;
+        setTimeout(promptInstall, 1500);
+      }
+    }
   }
 
   /* ---------------- toast ---------------- */
@@ -644,9 +653,8 @@ const UI = (() => {
      (not from the home screen) it pops a sheet: Chrome on Android and
      desktop hand us a real install prompt, iOS has no API but a three-step
      recipe, other Android browsers have a menu item. "Not now" is
-     remembered for three days; an installed app never asks again. */
-  const LS_INSTALL_SNOOZE = 'bw_install_snooze';   // ms timestamp: quiet until then
-  const LS_INSTALLED = 'bw_installed';
+     remembered for three days; installed app windows do not ask again. */
+  const LS_INSTALL_SNOOZE = 'kv_install_snooze_v2';   // ms timestamp: quiet until then
   const INSTALL_SNOOZE_MS = 3 * 24 * 3600 * 1000;
   let installPrompted = false;                     // once per page load
   let installRetries = 0;
@@ -655,22 +663,21 @@ const UI = (() => {
 
   function installEnv() {
     const ua = navigator.userAgent || '';
-    const standalone = (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true;
+    const standalone = (window.matchMedia && ['standalone', 'minimal-ui', 'window-controls-overlay'].some(mode => window.matchMedia('(display-mode: ' + mode + ')').matches)) || navigator.standalone === true;
     const iOS = /iPhone|iPad|iPod/i.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
     const android = /Android/i.test(ua);
     return { standalone, iOS, android, mobile: iOS || android || /Mobi/i.test(ua) };
   }
   /** What can be offered here: 'prompt' (native dialog), 'ios' or
-      'android' (instructions), or null (installed, or a desktop browser
-      with nothing to offer). */
+      'android' / 'desktop' (instructions), or null when already installed. */
   function installOffer() {
     if (WalletClient.android) return null;
     const env = installEnv();
-    if (env.standalone || lsGet(LS_INSTALLED)) return null;
-    if (installPrompt) return 'prompt';
+    if (env.standalone || installation.installed) return null;
+    if (installation.prompt) return 'prompt';
     if (env.iOS) return 'ios';
     if (env.android) return 'android';
-    return null;
+    return 'desktop';
   }
   const installSnoozed = () => Number(lsGet(LS_INSTALL_SNOOZE) || 0) > Date.now();
   const snoozeInstall = () => lsSet(LS_INSTALL_SNOOZE, String(Date.now() + INSTALL_SNOOZE_MS));
@@ -683,6 +690,7 @@ const UI = (() => {
       : 'Opens in its own window, works offline, and your passkey signs you in with one tap.';
     byId('install-steps-ios').hidden = offer !== 'ios';
     byId('install-steps-android').hidden = offer !== 'android';
+    byId('install-steps-desktop').hidden = offer !== 'desktop';
     const now = byId('btn-install-now');
     now.hidden = offer !== 'prompt';
     if (now.lastChild && now.lastChild.nodeType === 3) now.lastChild.textContent = env.mobile ? ' Add to Home Screen' : ' Install app';
@@ -691,10 +699,11 @@ const UI = (() => {
   /** Pop the sheet up: once per page load, never over another sheet or the
       camera, never while snoozed, never when installed. */
   function promptInstall() {
-    if (installPrompted || installSnoozed()) return;
+    if (installPrompted || installSnoozed() || installation.busy) return;
     const offer = installOffer();
-    if (!offer) return;
-    if (sheetEl || document.querySelector('.qr-overlay')) {
+    if (!offer || offer === 'desktop') return;
+    if (byId('view-recover') && !byId('view-recover').hidden) return;
+    if (passkeyBusy || sheetEl || document.querySelector('.qr-overlay')) {
       if (installRetries++ < 5) setTimeout(promptInstall, 4000);
       return;
     }
@@ -705,20 +714,35 @@ const UI = (() => {
 
   /** The native dialog where there is one; the recipe sheet otherwise. */
   async function runInstallPrompt() {
-    if (!installPrompt) { const o = installOffer(); if (o) { fillInstallSheet(o); openSheet('sheet-install'); } return; }
-    const ev = installPrompt;
-    let choice = null;
-    try { ev.prompt(); choice = await ev.userChoice; } catch (_) {}
-    installPrompt = null;
-    if (choice && choice.outcome === 'accepted') {
-      lsSet(LS_INSTALLED, '1');
-      if (sheetEl && sheetEl.id === 'sheet-install') closeSheet();
-      toast('Added — open KOIN Vault from your home screen');
-    } else {
-      snoozeInstall();
-      if (sheetEl && sheetEl.id === 'sheet-install') closeSheet();
+    if (installation.busy || !installOffer()) return;
+    if (!installation.prompt) { fillInstallSheet(installOffer()); openSheet('sheet-install'); return; }
+    const ev = installation.prompt;
+    installation.prompt = null; // Browser events can be consumed only once.
+    installation.busy = true;
+    try {
+      await ev.prompt();
+      const choice = await ev.userChoice;
+      installPrompted = true;
+      if (choice && choice.outcome === 'accepted') {
+        if (sheetEl && sheetEl.id === 'sheet-install') closeSheet({ completed: true });
+        toast('Installation requested — look for KOIN Vault on your home screen');
+      } else {
+        snoozeInstall();
+        if (sheetEl && sheetEl.id === 'sheet-install') closeSheet({ dismissed: true });
+      }
+    } catch (_) {
+      const offer = installOffer();
+      if (offer) { fillInstallSheet(offer); openSheet('sheet-install'); }
+      toast('Use your browser menu to add KOIN Vault to your home screen');
+    } finally {
+      installation.busy = false;
+      paintInstall();
     }
-    paintInstall();
+  }
+
+  function setPasskeyBusy(value) {
+    passkeyBusy = !!value;
+    if (!passkeyBusy) setTimeout(promptInstall, 1500);
   }
 
   function paintInstall() {
@@ -727,10 +751,12 @@ const UI = (() => {
     const env = installEnv();
     const offer = installOffer();
     row.hidden = !offer;
+    const landing = byId('btn-install-landing');
+    if (landing) landing.hidden = !offer;
     byId('btn-install').hidden = !offer;
     byId('ios-install-note').hidden = offer !== 'ios';
     byId('install-generic').hidden = offer !== 'android';
-    byId('installed-note').hidden = !(WalletClient.android || env.standalone || lsGet(LS_INSTALLED));
+    byId('installed-note').hidden = !(WalletClient.android || env.standalone || installation.installed);
     if (WalletClient.android) byId('installed-note').textContent = '✓ You are using the Android app.';
     const ready = byId('offline-ready');
     if (ready) ready.hidden = !(navigator.serviceWorker && navigator.serviceWorker.controller);
@@ -829,10 +855,10 @@ const UI = (() => {
       }).observe(st, { attributes: true, childList: true, characterData: true, subtree: true, attributeFilter: ['class', 'hidden'] });
     }
     /* sheets: scrim, handles, X, Escape */
-    const scrim = byId('scrim'); if (scrim) scrim.addEventListener('click', () => closeSheet());
+    const scrim = byId('scrim'); if (scrim) scrim.addEventListener('click', () => closeSheet({ dismissed: true }));
     document.addEventListener('click', (e) => {
       const c = e.target.closest && e.target.closest('[data-close]');
-      if (c && sheetEl && sheetEl.contains(c)) closeSheet();
+      if (c && sheetEl && sheetEl.contains(c)) closeSheet({ dismissed: true });
       const rk = e.target.closest && e.target.closest('[data-rekey]');
       if (rk) { const b = byId('btn-rekey'); if (b) b.click(); }
     });
@@ -840,7 +866,7 @@ const UI = (() => {
       if (e.defaultPrevented) return;
       if (e.key === 'Escape') {
         if (document.querySelector('.qr-overlay')) return;   // the scanner owns Escape while it is up
-        if (sheetEl) { e.preventDefault(); closeSheet(); }
+        if (sheetEl) { e.preventDefault(); closeSheet({ dismissed: true }); }
         return;
       }
       /* Tab stays inside an open sheet (it is a modal dialog). */
@@ -868,26 +894,21 @@ const UI = (() => {
     on('chk-backup', () => { const b = byId('btn-add-passkey'); if (b && !b.hidden && !byId('chk-backup').classList.contains('on')) { b.scrollIntoView({ block: 'center' }); b.click(); } });
     on('chk-kit', () => { const b = byId('btn-make-kit'); if (b && !b.hidden && !byId('chk-kit').classList.contains('on')) { b.scrollIntoView({ block: 'center' }); b.click(); } });
     /* install prompt */
-    window.addEventListener('beforeinstallprompt', (e) => {
-      e.preventDefault();
+    window.addEventListener('wallet-install-change', () => {
       if (WalletClient.android) return;
-      installPrompt = e;
       paintInstall();
-      /* Chrome fires this a moment after load: upgrade an open recipe sheet
-         to the real button, or open the sheet now if it was not yet shown. */
-      if (sheetEl && sheetEl.id === 'sheet-install') fillInstallSheet('prompt');
-      else promptInstall();
+      if (installation.installed) {
+        if (sheetEl && sheetEl.id === 'sheet-install') closeSheet({ completed: true });
+        toast('Added — open KOIN Vault from your home screen');
+      } else if (installation.prompt) {
+        if (sheetEl && sheetEl.id === 'sheet-install') fillInstallSheet('prompt');
+        else promptInstall();
+      }
     });
-    window.addEventListener('appinstalled', () => {
-      if (WalletClient.android) return;
-      installPrompt = null; lsSet(LS_INSTALLED, '1');
-      if (sheetEl && sheetEl.id === 'sheet-install') closeSheet();
-      toast('Added — open KOIN Vault from your home screen');
-      paintInstall();
-    });
+    on('btn-install-landing', runInstallPrompt);
     on('btn-install', runInstallPrompt);
     on('btn-install-now', runInstallPrompt);
-    on('btn-install-later', () => { snoozeInstall(); closeSheet(); });
+    on('btn-install-later', () => closeSheet({ dismissed: true }));
     setTimeout(promptInstall, 1500);
     if (navigator.serviceWorker) navigator.serviceWorker.addEventListener('controllerchange', paintInstall);
     /* offline */
@@ -901,7 +922,7 @@ const UI = (() => {
   init();
 
   return {
-    showTab, openSheet, closeSheet, toast, onView, applyIntent, setContext, reset, promptInstall, installOffer,
+    showTab, openSheet, closeSheet, toast, onView, applyIntent, setContext, reset, promptInstall, installOffer, setPasskeyBusy,
     paintPortfolio, paintProtection, renderSendSummary, decorateAddr, openToken,
     currentTab: () => currentTab, openSheetId: () => (sheetEl ? sheetEl.id : null),
   };
