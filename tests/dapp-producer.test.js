@@ -47,5 +47,13 @@ const op = async (c, name, args) => (await c.functions[name](args, { onlyOperati
   await assert.rejects(reviewProducer([wrongSpender], address, 'mainnet'), /official PoB/);
   const unlimited = await op(vhp, 'approve', { owner: address, spender: CONTRACTS.pob, value: '18446744073709551615' });
   await assert.rejects(reviewProducer([unlimited], address, 'mainnet'), /limited/);
+  const full = await op(vhp, 'approve', { owner: address, spender: CONTRACTS.pob, value: '1100000000' });
+  const combined = await reviewProducer([approve, burn, full], address, 'mainnet');
+  assert.match(combined.detail, /11.00000000 VHP/);
+  assert.match(combined.detail, /Both changes succeed together/);
+  await assert.rejects(reviewProducer([approve, burn, wrongSpender], address, 'mainnet'), /combination/);
+  await assert.rejects(reviewProducer([approve, burn, unlimited], address, 'mainnet'), /amount/);
+  await assert.rejects(reviewProducer([full, approve, burn], address, 'mainnet'), /combination/);
+  await assert.rejects(reviewProducer([excess, burn, full], address, 'mainnet'), /exactly/);
   console.log('✓ KAI producer approvals decode exact amounts, accounts and hot keys and reject unrelated or excessive authority');
 })().catch(e => { console.error(e); process.exitCode = 1; });

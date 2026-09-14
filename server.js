@@ -1178,7 +1178,7 @@ const server = http.createServer(async (req, res) => {
         if (surface.android && apiPath === '/api/health') url.searchParams.delete('rail');
         out = await GET_ROUTES[apiPath](url.searchParams, surface, req);
         if (apiPath === '/api/config') {
-          out = { ...out, client: surface.android ? 'android' : 'web', features: { openDappConnections: true, dappReviewVersion: 1, kaiProducer: !DEMO && CFG.network === "mainnet", kaiProductionAllowance: !DEMO && CFG.network === "mainnet", buy: !surface.android } };
+          out = { ...out, client: surface.android ? 'android' : 'web', features: { openDappConnections: true, dappReviewVersion: 1, kaiProducer: !DEMO && CFG.network === "mainnet", kaiProductionAllowance: !DEMO && CFG.network === "mainnet", kaiBurnFullVhp: !DEMO && CFG.network === "mainnet", buy: !surface.android } };
           if (surface.android) { delete out.float; delete out.solRail; }
         }
       } else if (req.method === 'POST' && POST_ROUTES[apiPath]) {

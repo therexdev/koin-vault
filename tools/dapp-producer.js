@@ -21,7 +21,7 @@ const canonical = operation => {
 // authority or add an unrelated approval to a producer transaction.
 async function reviewProducer(operations, address, network) {
   if (network !== "mainnet") throw new Error("KAI producer requests require Mainnet");
-  if (!Array.isArray(operations) || operations.length < 1 || operations.length > 2) throw new Error("Invalid producer operations");
+  if (!Array.isArray(operations) || operations.length < 1 || operations.length > 3) throw new Error("Invalid producer operations");
   const decoded = [];
   for (const op of operations) {
     const c = op.call_contract;
@@ -35,6 +35,16 @@ async function reviewProducer(operations, address, network) {
     if (!isDeepStrictEqual(canonical(encoded.operation), canonical(op))) throw new Error("Noncanonical producer operation");
     decoded.push({ kind, ...d });
   }
+  let productionAllowance = null;
+  if (decoded.length > 1 && decoded.at(-1).kind === "vhp" && decoded.at(-1).name === "approve") {
+    const approval = decoded.pop(), previous = decoded.at(-1);
+    if (previous.kind !== "pob" || previous.name !== "burn" || approval.args.owner !== address || approval.args.spender !== CONTRACTS.pob) throw new Error("Invalid burn production allowance combination");
+    const value = String(approval.args.value || "0");
+    amount(value);
+    if (value === "18446744073709551615" || BigInt(value) < BigInt(previous.args.token_amount)) throw new Error("Invalid burn production allowance amount");
+    productionAllowance = value;
+  }
+  if (decoded.length > 2) throw new Error("Unsupported producer operation combination");
   const last = decoded.at(-1), a = last.args;
   let title, detail;
   if (last.name === "register_public_key" && decoded.length === 1) {
@@ -64,6 +74,10 @@ async function reviewProducer(operations, address, network) {
     title = `Transfer ${last.kind.toUpperCase()} from producer`;
     detail = `Send ${amount(a.value)} ${last.kind.toUpperCase()} from ${address} to ${a.to}. Approving submits this transfer.`;
   } else throw new Error("Unsupported producer operation combination");
+  if (productionAllowance !== null) {
+    title = "Burn KOIN and allow VHP production";
+    detail += ` Also replace the official PoB production allowance with ${amount(productionAllowance)} VHP. Both changes succeed together. This is a fixed allowance, not automatic approval of future deposits.`;
+  }
   return { title, detail, network: "mainnet" };
 }
 module.exports = { ORIGIN, CONTRACTS, reviewProducer };

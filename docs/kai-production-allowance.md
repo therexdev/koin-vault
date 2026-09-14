@@ -27,3 +27,18 @@ real production still needs verification after the owner's approval.
 Reference: https://github.com/koinos/koinos-contracts-as/blob/master/contracts/vhp/assembly/Vhp.ts
 (`burn` and `_check_authority`). The runtime probe is required because source code
 alone is not proof of which interface is deployed on a network.
+
+## Manual burn with full allowance
+
+KAI Test's manual Koin Vault burn now offers an enabled-by-default, visible
+option to approve the full VHP balance including the newly burned amount. It
+uses `[KOIN approve (if required), PoB burn, VHP approve]` in one atomic transaction.
+The final approval must use the connected wallet and canonical PoB spender.
+The wallet decodes both the burn amount and the exact replacement allowance.
+The `kaiBurnFullVhp` feature flag prevents sending this to an older backend.
+
+The total is a snapshot read during preparation, plus the KOIN burn amount.
+Production or deposits while the phone review is open can change the balance;
+the signed amount remains fixed. Burns outside this KAI flow and later deposits
+do not automatically change permissions. The separate allowance action can be
+used with “Use full VHP balance” to refresh the allowance without a burn.
