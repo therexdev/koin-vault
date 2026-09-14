@@ -48,8 +48,18 @@ extra slots. The new UI follows the limit returned by `/api/config`; while an
 older backend is deployed it conservatively assumes six. The proxy preserves
 the backend's capacity value. No account records or existing keys are replaced.
 
-## Account access
+## VHP sending rollout
 
+Deploy the shared backend in `therexdev/koinos-bio-wallet` first, then the
+frontend in `therexdev/koin-vault`. `/api/config` advertises
+`sendAssets: ["koin", "vhp"]`; the proxy preserves this field. VHP stays
+disabled until the backend supports it, and the browser refuses to sign a
+preparation that does not identify VHP as the selected asset. Older clients
+that omit `asset` continue to prepare KOIN. No new contracts, account migration
+or environment changes are required. Real-device passkey approval and an
+on-chain VHP transfer remain the final manual smoke test.
+
+## Account access
 Existing account records stay in the original data folder. Original passkeys
 continue to work at `wallet.usekoinos.com`. Passkeys created at `koinvault.app`
 continue to work there. This service fix does not change an existing passkey,

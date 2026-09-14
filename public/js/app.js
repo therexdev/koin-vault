@@ -16,6 +16,8 @@
   let RECOVERY = null;     // {credentialId, privateKey} while in recovery mode
   let PENDING_BACKUP = null; // a captured-but-unregistered backup passkey
   let BALANCE_SATS = '';   // the chain's own integer balance, for "Send all"
+  let VHP_BALANCE_SATS = '';
+  let SENDING = false;
   let DAPP = null;         // {sessionId, secret}; bearer secret stays on this device
   let DAPP_POLL = null;
   let DAPP_REQUEST = null;
@@ -450,7 +452,10 @@
     try {
       await account;
       const m = await portfolio;
-      if (gen === PAINT_GEN) UI.paintPortfolio(m);
+      if (gen === PAINT_GEN) {
+        VHP_BALANCE_SATS = !m.error && m.vhp && !m.vhp.unavailable && m.vhp.sats != null ? String(m.vhp.sats) : '';
+        UI.paintPortfolio(m);
+      }
     } finally {
       if (gen === PAINT_GEN) {
         PAINTING = false;
@@ -655,21 +660,29 @@
   /* Send — prepare on the server, sign with the passkey (the challenge IS
      the transaction id) or the recovery key, the chain verifies either. */
   $('#btn-send').addEventListener('click', async () => {
+    if (SENDING) return;
     const btn = $('#btn-send'), st = $('#send-status');
+    const asset = UI.sendAsset(), symbol = UI.sendSymbol();
     const to = $('#send-to').value.trim();
     const amount = $('#send-amount').value.trim();
     const say = (msg, cls) => { st.hidden = false; st.className = 'status' + (cls ? ' ' + cls : ''); st.innerHTML = msg; };
+    if (!UI.canSendAsset(asset)) { say('Refresh the wallet to check whether this asset can be sent.', 'err'); return; }
     if (!to) { say('Paste a destination address', 'err'); return; }
-    if (!/^\d+(\.\d+)?$/.test(amount) || Number(amount) <= 0) { say('Amount must be a positive number', 'err'); return; }
+    if (!/^\d+(\.\d{1,8})?$/.test(amount) || Number(amount) <= 0) { say('Amount must be a positive number (max 8 decimals)', 'err'); return; }
+    SENDING = true;
     btn.disabled = true;
+    UI.setSendBusy(true);
     try {
       say('Preparing the exact transaction — the sharer pays the mana…');
-      const prep = await api('/api/prepare', { address: ADDRESS, to, amount });
+      const prep = await api('/api/prepare', { address: ADDRESS, to, amount, asset });
+      // During a rolling deploy an older server could ignore `asset` and
+      // prepare KOIN. Never sign that transaction when VHP was requested.
+      if ((prep.asset || 'koin') !== asset) throw new Error('VHP sending is being updated. Refresh and try again shortly.');
       say(RECOVERY ? 'Signing with your recovery key…' : 'Confirm with your passkey — it signs the transaction id itself…');
       const blob = await signPrepared(prep.tx);
       say('Broadcasting — the chain verifies the signature on-chain…');
       const r = await api('/api/submit', { ref: prep.ref, transaction: { ...prep.tx, signatures: [blob] } });
-      say('Sent ✓ ' + (r.explorer
+      say(`Sent ${symbol} ✓ ` + (r.explorer
         ? `— <a href="${r.explorer}" target="_blank" rel="noopener">view it on-chain ↗</a>`
         : (r.demo ? `(demo transaction ${r.txid.slice(0, 14)}…)` : '')), 'ok');
       $('#send-to').value = ''; $('#send-amount').value = '';
@@ -677,6 +690,8 @@
     } catch (e) {
       say(e.name === 'NotAllowedError' ? 'Passkey prompt closed — nothing was sent' : (e.message || 'Send failed'), 'err');
     } finally {
+      SENDING = false;
+      UI.setSendBusy(false);
       btn.disabled = ACTIVE ? false : true;
     }
   });
@@ -697,7 +712,7 @@
       /* A payment QR can carry the amount too; taking it saves retyping a
          number that was already in the code. */
       if (hit.amount) $('#send-amount').value = hit.amount;
-      say('Scanned ✓ ' + hit.address + (hit.amount ? ` · ${hit.amount} ${cfg.nativeSymbol || 'KOIN'}` : ''), 'ok');
+      say('Scanned ✓ ' + hit.address + (hit.amount ? ` · ${hit.amount} ${UI.sendSymbol()}` : ''), 'ok');
       ($('#send-amount').value ? $('#btn-send') : $('#send-amount')).focus();
     } catch (e) {
       say(e.message || 'Could not open the camera', 'err');
@@ -713,7 +728,8 @@
       more than exists — is not all. Mana is sponsored here, so nothing has
       to be held back for a fee. */
   function sendAllAmount() {
-    const sats = BigInt(/^\d+$/.test(BALANCE_SATS) ? BALANCE_SATS : '0');
+    const balance = UI.sendAsset() === 'vhp' ? VHP_BALANCE_SATS : BALANCE_SATS;
+    const sats = BigInt(/^\d+$/.test(balance) ? balance : '0');
     if (sats <= 0n) return null;
     const whole = sats / 100000000n;
     const frac = String(sats % 100000000n).padStart(8, '0').replace(/0+$/, '');
@@ -725,7 +741,8 @@
     const all = sendAllAmount();
     if (!all) {
       st.hidden = false; st.className = 'status err';
-      st.textContent = BALANCE_SATS === '' ? 'Balance is still loading — try again in a moment' : 'There is no KOIN in this account yet';
+      const balance = UI.sendAsset() === 'vhp' ? VHP_BALANCE_SATS : BALANCE_SATS;
+      st.textContent = balance === '' ? 'Balance is unavailable — refresh and try again' : `There is no ${UI.sendSymbol()} in this account yet`;
       return;
     }
     $('#send-amount').value = all;
@@ -739,7 +756,7 @@
     if (DAPP) void api('/api/dapp/disconnect', DAPP).catch(() => {});
     saveDapp(null); paintDappRequest(null, null);
     PAINT_GEN++; PAINTING = false; PAINT_AGAIN = false;   // in-flight reads for this account are void
-    BALANCE_SATS = '';
+    BALANCE_SATS = ''; VHP_BALANCE_SATS = '';
     clearPendingKit();
     ADDRESS = null; ACTIVE = false; RECOVERY = null; CREDENTIALS = []; PENDING_BACKUP = null;
     /* The credential id stays remembered: it's public on-chain anyway, the
