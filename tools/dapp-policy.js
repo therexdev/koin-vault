@@ -6,6 +6,8 @@ const crypto = require('node:crypto');
 const WEBSITE_ROUTES = new Set(['create', 'status', 'request', 'request-status', 'disconnect', 'launch']);
 const WALLET_ROUTES = new Set(['challenge', 'connect', 'pending', 'approve', 'reject']);
 const fail = (status, message) => Object.assign(new Error(message), { status });
+const ACCOUNT_CODE_HASH = '0x1220' + crypto.createHash('sha256')
+  .update(fs.readFileSync(path.join(__dirname, '../contracts/vendor/account/Account.wasm'))).digest('hex');
 
 // Origin is a browser boundary, not proof that a server owns a domain.
 // Session secrets and wallet signatures remain mandatory independently.
@@ -44,6 +46,33 @@ function positive(value, fallback) {
   const input = String(value ?? fallback);
   if (!/^[1-9][0-9]{0,12}$/.test(input)) throw new Error('DApp sponsorship limits must be positive whole mana amounts');
   return BigInt(input) * 100000000n;
+}
+
+// Even a native transfer can invoke the source account's authorize callback.
+// Do not expose the sponsor's ECDSA authority to replaced account code or an
+// arbitrary installed module. Read uncached, bracket the reads with the signed
+// account nonce, and require the standard Vault account and only its two modules.
+async function assertSponsorAccount(chain, address, transaction) {
+  const provider = chain.provider();
+  const expectedModules = [chain.K.modules.modSign, chain.K.modules.modValidation];
+  if (expectedModules.some(m => !m) || address === chain.sponsorAddress()) throw fail(403, 'This account must use its own mana');
+  async function checkNonce() {
+    if (transaction && (transaction.header.payee !== address
+        || transaction.header.payer !== chain.sponsorAddress()
+        || await provider.getNextNonce(address) !== transaction.header.nonce)) {
+      throw fail(409, 'Wallet state changed. Create a fresh transaction request.');
+    }
+  }
+  await checkNonce();
+  const { value } = await provider.invokeGetContractMetadata(address);
+  if (!value || value.hash !== ACCOUNT_CODE_HASH || value.system
+      || value.authorizes_call_contract !== true || value.authorizes_transaction_application !== true
+      || value.authorizes_upload_contract !== true) throw fail(403, 'Modified wallet code must use its own mana');
+  const modules = await chain.accountModules(address);
+  if (!Array.isArray(modules) || modules.length !== 2 || expectedModules.some(m => !modules.includes(m))) {
+    throw fail(403, 'Custom wallet modules must use the wallet\u2019s own mana');
+  }
+  await checkNonce();
 }
 
 // Charge the signed ceiling, not an estimate. Persist before the sponsor signs.
@@ -90,4 +119,4 @@ function createBudget({ file, globalMana, accountMana, siteMana, now = Date.now 
   return { check, spend };
 }
 
-module.exports = { websiteOrigin, access, requestOrigin, WEBSITE_ROUTES, WALLET_ROUTES, createBudget };
+module.exports = { websiteOrigin, access, requestOrigin, WEBSITE_ROUTES, WALLET_ROUTES, createBudget, assertSponsorAccount, ACCOUNT_CODE_HASH };

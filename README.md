@@ -629,7 +629,9 @@ Each requested transaction requires a fresh passkey assertion.
 Native KOIN/VHP actions using the connected account's authority and supported
 PoB combinations are eligible for capped sponsorship. Arbitrary/custom contract
 calls use the user's own mana and receive no Vault sponsor signature. Native
-requests also use the user's mana if sponsor capacity or daily budgets are
+requests also require freshly verified standard account code and modules;
+modified accounts use their own mana. The signed account nonce is rechecked.
+Native requests also use the user's mana if sponsor capacity or daily budgets are
 unavailable. The payer is chosen before signing and never silently changed
 later. The persistent daily budget charges each signed maximum, including
 failed or uncertain submissions. See the integration guide for exact limits.

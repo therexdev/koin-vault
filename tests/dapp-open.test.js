@@ -68,13 +68,18 @@ function signature(challenge, origin = wallet) {
   const submitted = [], prepared = [];
   let blockPrepare = null, holdProof = null, holdSubmit = null;
   let sponsorRc = '1000000000000', walletRc = '1000000000000';
+  let codeHash = policy.ACCOUNT_CODE_HASH, modules = ['sign-module', 'validation-module'], nonce = 'nonce-1';
   const chain = {
-    K: { ...realChain.K, modules: {} }, net: () => net, isAddr: realChain.isAddr,
+    K: { ...realChain.K, modules: { modSign: 'sign-module', modValidation: 'validation-module' } }, net: () => net, isAddr: realChain.isAddr,
     modSignSerializer: realChain.modSignSerializer,
     accountCredentials: async account => { assert.equal(account, address); if (holdProof) await holdProof;
       return [{ credential_id: 'fixture', public_key: key }]; },
     tokenMeta: async () => ({ symbol: 'KOIN', decimals: 6 }), sponsorAddress: () => sponsor,
-    provider: () => ({ getAccountRc: async account => account === sponsor ? sponsorRc : walletRc }),
+    accountModules: async () => modules,
+    provider: () => ({ getAccountRc: async account => account === sponsor ? sponsorRc : walletRc,
+      getNextNonce: async () => nonce,
+      invokeGetContractMetadata: async () => ({ value: { hash: codeHash, authorizes_call_contract: true,
+        authorizes_transaction_application: true, authorizes_upload_contract: true } }) }),
     prepareUserTx: async (user, ops, options) => prepare(user, ops, options, true),
     prepareSelfPaidTx: async (user, ops, options) => prepare(user, ops, options, false),
     submitSmartCosigned: async tx => { submitted.push('sponsor'); if (holdSubmit) await holdSubmit; return tx.id; },
@@ -84,7 +89,7 @@ function signature(challenge, origin = wallet) {
     prepared.push(sponsored ? 'sponsor' : 'wallet');
     if (blockPrepare) await blockPrepare;
     return { id: '0x1220' + crypto.randomBytes(32).toString('hex'),
-      header: { payer: sponsored ? sponsor : user, payee: user, rc_limit: options.rcLimit }, operations: ops };
+      header: { payer: sponsored ? sponsor : user, payee: user, nonce, rc_limit: options.rcLimit }, operations: ops };
   }
   const context = vm.createContext({
     api: {}, DEMO: false, CFG: { network: 'mainnet', publicUrl: wallet, passkeyRpId: 'koinvault.app', minCreateMana: 120 },
@@ -206,6 +211,18 @@ function signature(challenge, origin = wallet) {
   finish(); await broadcasting; holdSubmit = null;
   const afterSubmit = await ask(reconnected, [native]);
   assert.equal(afterSubmit.status, 'pending', 'Submission releases the account lock');
+  modules = ['sign-module', 'validation-module', 'malicious-authority-module'];
+  await assert.rejects(approve(reconnected, afterSubmit), /Custom wallet modules/);
+  const modified = await ask(reconnected, [native]);
+  assert.equal(modified.funding.payer, 'wallet', 'An arbitrary authority callback gets no sponsor signature');
+  await api.dappReject({ ...reconnected, requestId: modified.id }, null, null, req(wallet));
+  modules = ['sign-module', 'validation-module']; codeHash = 'changed-code';
+  await assert.rejects(policy.assertSponsorAccount(chain, address), /Modified wallet code/);
+  codeHash = policy.ACCOUNT_CODE_HASH;
+  const staleNonce = await ask(reconnected, [native]);
+  nonce = 'nonce-2';
+  await assert.rejects(approve(reconnected, staleNonce), /Wallet state changed/);
+  assert.equal(submitted.length, 4, 'Changed code, modules or nonce never reach the sponsor');
   console.log('✓ Open HTTPS connections: real passkey consent, isolated sessions, decoded reviews, acknowledgement, safe payer selection, persistent budgets, concurrent/revoked requests');
 })().catch(error => { console.error(error); process.exitCode = 1; })
   .finally(() => { relay._sessions.clear(); fs.rmSync(temp, { recursive: true, force: true }); });

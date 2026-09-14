@@ -280,6 +280,7 @@ api.dappRequest = async (body, ip, _surface, req) => {
     if (sponsored) {
       try {
         dappBudget.check(session.address, session.origin, ceiling);
+        await dappPolicy.assertSponsorAccount(chain, session.address);
         const available = BigInt(await chain.provider().getAccountRc(chain.sponsorAddress()));
         sponsored = available >= BigInt(ceiling) + dappReservedMana + BigInt(Math.ceil(CFG.minCreateMana * 1e8));
       } catch (_) { sponsored = false; }
@@ -351,6 +352,7 @@ api.dappApprove = async (body, _ip, _surface, req) => {
       txid = request.transaction.id;
     } else if (request.funding.payer === 'sponsor') {
       if (!request.review.sponsorEligible) throw httpError(403, 'This contract action cannot use the sponsor');
+      await dappPolicy.assertSponsorAccount(chain, session.address, request.transaction);
       const available = BigInt(await chain.provider().getAccountRc(chain.sponsorAddress()));
       const ceiling = BigInt(request.funding.rcLimit);
       if (available < ceiling + dappReservedMana + BigInt(Math.ceil(CFG.minCreateMana * 1e8))) throw httpError(503, 'Sponsorship capacity is unavailable. Create a new request to use your wallet\u2019s mana.');

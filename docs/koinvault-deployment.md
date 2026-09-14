@@ -37,6 +37,9 @@ it resets the budget. Only one wallet backend process may own this data director
 Unfamiliar/custom contract calls use the user's own mana and receive no sponsor
 signature. Eligible native actions also fall back to the user's mana when the
 budget or capacity is unavailable; the user reviews the chosen payer before signing.
+Sponsorship requires fresh RPC verification of the account's bytecode hash,
+authorization flags, standard modules and signed nonce. Modified accounts or
+unavailable metadata reads do not qualify; standard pairing still works.
 
 ## Existing accounts
 

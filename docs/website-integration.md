@@ -251,6 +251,11 @@ also qualify. Other calls, including custom tokens, wallet authority changes and
 unrecognized contracts, use the connected account's own mana and receive no
 KOIN Vault sponsor signature. A mixed request qualifies only if every action is eligible.
 
+Sponsorship also requires the standard Vault account bytecode and only the
+configured signing and validation modules. The backend checks these again
+before co-signing, along with the prepared account nonce. Modified accounts
+and accounts whose configuration cannot be verified use their own mana.
+
 The signed ceiling is 20 mana for one eligible native-token operation and 100
 mana for other ordinary requests. Mana is a regenerating resource; the ceiling
 is not a KOIN fee and only actual execution consumption is used. The payer must
