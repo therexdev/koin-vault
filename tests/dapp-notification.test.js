@@ -47,3 +47,24 @@ assert.equal(elements.get('#dapp-ack').checked, false, 'A new request requires a
 vm.runInContext('paintDappRequest(null, null)', ctx);
 assert.equal(elements.get('#dapp-request').hidden, true);
 console.log('✓ Incoming requests become visible once, retain focus during polling and clear after handling');
+
+(async () => {
+  const pair = { address: 'wallet', origin: 'https://koinosai.com' };
+  let message;
+  const polling = vm.createContext({
+    URLSearchParams, RESUMING: false, DAPP: pair, ADDRESS: 'wallet', document: { hidden: false }, DAPP_BUSY: false, DAPP_POLLING: false,
+    DAPP_REQUEST: null, DAPP_RESULT: { pair, message: 'Transaction failed: insufficient mana', kind: 'err' },
+    api: async () => ({ app: { origin: pair.origin }, requests: [] }), isDappBlocked: () => false,
+    $: () => ({}), paintDappRequest() {}, dappSay(m) { message = m; },
+  });
+  vm.runInContext(source.slice(source.indexOf('  async function pollDapp('), source.indexOf('  function startDappPoll(')), polling);
+  await vm.runInContext('pollDapp()', polling);
+  assert.equal(message, 'Transaction failed: insufficient mana');
+  polling.DAPP_RESULT = { pair, message: 'Transaction submitted: tx-id', kind: 'ok' };
+  await vm.runInContext('pollDapp()', polling);
+  assert.equal(message, 'Transaction submitted: tx-id');
+  polling.DAPP_RESULT = { pair: {}, message: 'old wallet error', kind: 'err' };
+  await vm.runInContext('pollDapp()', polling);
+  assert.equal(message, 'Connected to https://koinosai.com');
+  console.log('✓ Polling preserves transaction outcomes only for the current connection');
+})().catch(e => { console.error(e); process.exitCode = 1; });

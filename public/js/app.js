@@ -23,6 +23,7 @@
   let DAPP = null;         // {sessionId, secret}; bearer secret stays on this device
   let DAPP_POLL = null;
   let DAPP_REQUEST = null;
+  let DAPP_RESULT = null;
   let DAPP_BUSY = false, DAPP_POLLING = false;
 
   /* ---------------- installable ----------------
@@ -295,8 +296,11 @@
       }
       if (pair.origin !== data.app.origin) { pair.origin = data.app.origin; saveDapp(pair); }
       $('#btn-dapp-disconnect').hidden = false;
-      paintDappRequest(data.app, data.requests[0] || null);
-      if (!data.requests.length) dappSay(`Connected to ${data.app.origin}`, 'ok');
+      const incoming = data.requests[0] || null;
+      if (incoming && incoming.id !== DAPP_REQUEST?.id) DAPP_RESULT = null;
+      paintDappRequest(data.app, incoming);
+      if (DAPP_RESULT?.pair === pair) dappSay(DAPP_RESULT.message, DAPP_RESULT.kind);
+      else if (!data.requests.length) dappSay(`Connected to ${data.app.origin}`, 'ok');
     } catch (e) {
       if (DAPP !== pair || !ADDRESS) return;
       dappSay(e.status === 404 ? 'Connection expired. Scan a new QR to reconnect.' : 'Cannot receive app requests: ' + e.message, 'err');
@@ -323,9 +327,15 @@
       dappSay('Confirm with your passkey…');
       const blob = await signPrepared(request.transaction);
       if (DAPP !== pair || pair.address !== ADDRESS || isDappBlocked(pair.origin)) throw new Error('Wallet connection changed; reconnect');
+      dappSay('Fingerprint accepted. Submitting transaction…');
       const result = await api('/api/dapp/approve', { ...pair, requestId: request.id, acknowledged: $('#dapp-ack').checked, transaction: { ...request.transaction, signatures: [blob] } });
-      paintDappRequest(null, null); dappSay(result.signedOnly ? 'Launch approved. Return to OURO to follow deployment.' : `Approved · ${result.txid.slice(0, 14)}…`, 'ok'); void paint();
-    } catch (e) { dappSay(friendly(e), 'err'); }
+      paintDappRequest(null, null);
+      DAPP_RESULT = { pair, message: result.signedOnly ? 'Launch approved. Return to OURO to follow deployment.' : `Transaction submitted: ${result.txid}`, kind: 'ok' };
+      dappSay(DAPP_RESULT.message, DAPP_RESULT.kind); void paint();
+    } catch (e) {
+      DAPP_RESULT = { pair, message: friendly(e), kind: 'err' };
+      dappSay(DAPP_RESULT.message, DAPP_RESULT.kind);
+    }
     finally {
       DAPP_BUSY = false;
       btn.disabled = !DAPP_REQUEST?.review || (DAPP_REQUEST.review.requiresAcknowledgement && !$('#dapp-ack').checked);
