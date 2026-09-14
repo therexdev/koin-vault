@@ -16,6 +16,7 @@ const path = require("path");
 const PeripheryAbi = require("./abi/koindx-periphery-abi.json");
 const CoreAbi = require("./abi/koindx-core-abi.json");
 const { BRIDGE } = require("./bridge-constants");
+const { opExecuteUser } = require("../chain");
 
 const TOKEN_ABI = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "..", "abi", "token-abi.json")));
 
@@ -83,8 +84,10 @@ async function quoteSwap({ amountInSats, slippageBps = DEFAULT_SLIPPAGE_BPS, net
   };
 }
 
-// The approve + swap_tokens_in OPERATIONS for the wallet's co-sign pipeline
-// (the smart account signs with its passkey; the sponsor pays the mana).
+// Both calls execute through the smart account. vETH's legacy top-level
+// approve enumerates secp256k1 signatures and throws on a WebAuthn blob.
+// A nested call instead recognizes the account as the owner/caller. The
+// router then spends only this exact allowance and returns KOIN to it.
 async function opsKoindxSwap({ account, amountInSats, amountOutMin, network = "mainnet", provider } = {}) {
   const cfg = KOINDX[network];
   if (!cfg || !cfg.router) throw new Error(`KoinDX not configured for ${network}`);
@@ -103,7 +106,7 @@ async function opsKoindxSwap({ account, amountInSats, amountOutMin, network = "m
     amountOutMin: String(amountOutMin),
     path: swapPath(network),
   }, { onlyOperation: true });
-  return [approve, swap];
+  return [await opExecuteUser(account, approve), await opExecuteUser(account, swap)];
 }
 
 module.exports = {

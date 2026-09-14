@@ -170,6 +170,17 @@ that battle-tested implementation: `node tests/eth-parity.test.js`):
 | S | SOL → vKOIN on Solana (Jupiter) → Wormhole → Ethereum → Vortex 1:1 → KOIN | short, but a small pool and it cannot pay its own gas |
 | T | SOL → wETH on Solana (Jupiter) → Wormhole (unwraps to ether) → Route C's tail → KOIN | usually the best SOL route |
 
+Route B's final approval and swap run through the smart account's
+`execute_user` entry point. The legacy vETH token tries to recover all
+top-level signatures as secp256k1; directly approving with a passkey blob
+therefore fails with `unexpected signature length`. Calling through the
+account lets the token recognize its owner as the caller, while the account
+still validates the signed operation. Both calls remain in one transaction,
+with the exact vETH allowance, original recipient and approved slippage floor.
+An existing job at **vETH arrived** can be retried after a refresh; it does
+not need another ETH deposit or bridge transfer. The sponsor must cover the
+full 20-mana ceiling before the wallet asks for the passkey.
+
 USDC and USDT deposits ride Route C's tail (USDC adds one hop through the
 deepest stable pair on Ethereum). The server quotes every route live, shows
 the comparison, and executes the winner. Amounts are capped while the rails

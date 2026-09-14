@@ -253,6 +253,20 @@ async function opTokenTransfer(contractId, from, to, valueSats) {
   return operation;
 }
 
+/** Call a contract THROUGH the smart account. Legacy tokens such as vETH
+    recover every top-level signature as secp256k1, so a direct approve
+    cannot accept a WebAuthn blob. execute_user validates the operation via
+    the account's installed modules before calling it as the token owner. */
+async function opExecuteUser(accountAddr, operation) {
+  if (!operation?.call_contract || Object.keys(operation).length !== 1) {
+    throw new Error('smart-account execution requires a contract call');
+  }
+  const account = new Contract({ id: accountAddr, abi: ACCOUNT_ABI, provider: provider() });
+  const { operation: wrapped } = await account.functions.execute_user(
+    { operation: operation.call_contract }, { onlyOperation: true });
+  return wrapped;
+}
+
 /** Build the exact transaction the visitor must sign: sponsor pays,
     visitor is payee (their nonce, their authority). */
 async function prepareUserTx(userAddr, ops, { rcLimit = K.rcLimit } = {}) {
@@ -623,21 +637,14 @@ async function verifyPasskeyOnChain(account, sigB64u, txId) {
   }
 }
 
-/** "unexpected signature length" is a symptom, not a cause.
-
-    check_authority (koinos-chain system_calls.cpp) routes to a contract's own
-    authorize() only when that account IS a contract with the matching
-    authorize-override flag. For anything else it falls back to a loop that
-    calls recover_public_key(ecdsa_secp256k1, ...) over the transaction's
-    signatures — and that thunk hard-asserts a 65-byte signature. A WebAuthn
-    blob is far longer, so the moment the chain checks a PLAIN address while
-    our blob is attached, it aborts with this message no matter how good the
-    passkey is. Which means: the passkey wasn't accepted by the check that ran
-    first. Say that, instead of repeating the chain's words. */
+/** Both plain-address authority checks and legacy token contracts can call
+    secp256k1 recovery on a WebAuthn blob. This does NOT prove that the
+    account's passkey validator rejected it. In particular, vETH's direct
+    approve path enumerates every signature before consulting authority. */
 function explainSigLength(msg) {
   if (!/unexpected signature length/i.test(msg)) return msg;
-  return `${msg} — the chain fell back to plain-signature checking while your passkey signature was attached, `
-    + 'which only happens when the passkey was not accepted by the check before it';
+  return `${msg} — a contract or authority check tried to read a passkey signature as a standard wallet signature. `
+    + 'This does not by itself mean your passkey is invalid';
 }
 
 /** Read the validator's signature threshold for this account.
@@ -870,7 +877,7 @@ module.exports = {
   humanChainError, waitMined, withRpcRetry,
   tokenContractAt, tokenBalanceSats, vhpContract, vhpBalanceSats, tokenMeta,
   net: () => net(),
-  opKoinTransfer, opVhpTransfer, opTokenTransfer, prepareUserTx, submitCosigned, verifyAuthSignature,
+  opKoinTransfer, opVhpTransfer, opTokenTransfer, opExecuteUser, prepareUserTx, submitCosigned, verifyAuthSignature,
   /* Veive smart-account layer */
   veiveReady, newAccountKey, keyFromWif,
   accountModules, accountCredentials, credentialAddress, credentialRegisteredFor,
