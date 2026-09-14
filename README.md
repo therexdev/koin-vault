@@ -746,26 +746,18 @@ rpId), or import the WIF you exported. This app's passkeys are now scoped to
 its own hostname and its accounts live on-chain.
 
 
-### Running both wallet domains
+### Independent KOIN Vault backend
 
-`wallet.usekoinos.com` remains the authoritative wallet backend. The `koin-vault`
-repository serves `koinvault.app` and forwards account, native-token and funding
-API requests to the original wallet by default. Added-token transfers run in
-KOIN Vault itself. The Vault host does not open `DATA_DIR`, acquire its lock,
-or start funding workers. Both domains use the original backend's account records,
-native-token prepared transactions, and funding state. Vault holds its own
-short-lived added-token preparations in memory. No data copy or lock removal is needed.
+KOIN Vault now runs its own account, token, app-connection and funding APIs by
+ default. It does not require the old wallet deployment or repository.
+Use `WALLET_BACKEND_URL=local` and a dedicated persistent `DATA_DIR`.
+Existing registered Vault passkeys and activated recovery kits can rediscover
+accounts through the blockchain's credential index using the same network and
+smart-account module addresses. Old-domain passkeys remain domain-bound.
 
-Deploy updates to KOIN Vault only. Keep the original runtime environment and
-`DATA_DIR` unchanged. Each domain retains its own passkey relying-party ID.
-Original saved passkeys continue to sign in at `wallet.usekoinos.com`; this update
-does not change their on-chain authority or enable cross-domain passkey reuse.
-
-`WALLET_BACKEND_URL` overrides the upstream origin. `local` explicitly selects a
-standalone backend. Never point two standalone backends at the same data directory,
-and never run two funding workers from copies of one live funding ledger.
-Forwarding preserves the browser Origin and Android restrictions, checks passkey
-proofs at the backend, and never automatically retries transaction POSTs.
+See [standalone deployment](docs/koinvault-deployment.md) before switching hosting.
+An explicitly configured HTTPS `WALLET_BACKEND_URL` still enables legacy proxy
+mode; remove that override or set it to `local` to complete the separation.
 
 The **Create Account or Sign In** button opens the remembered passkey or creates
 a wallet when none is remembered. **Choose a saved passkey** opens the picker

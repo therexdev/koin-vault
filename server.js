@@ -61,7 +61,7 @@ const androidFingerprints = (raw) => String(raw || '').split(/[\s,]+/).map((f) =
 const CFG = {
   port: parseInt(process.env.PORT || '3000', 10),
   // 'local' explicitly selects an independent backend; it needs its own data.
-  backendUrl: String(process.env.WALLET_BACKEND_URL ?? 'https://wallet.usekoinos.com').trim(),
+  backendUrl: String(process.env.WALLET_BACKEND_URL ?? 'local').trim(),
   androidPackage: (process.env.ANDROID_PACKAGE || 'wallet.koinos.app').trim(),
   androidFingerprints: androidFingerprints(process.env.ANDROID_SHA256_FINGERPRINTS),
   network: (process.env.KOINOS_NETWORK || 'harbinger').trim(),

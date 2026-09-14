@@ -17,7 +17,7 @@ const { Signer } = require('koilib');
     chain.mana = chain.koinBalance = () => new Promise(() => {});
     const funding = require(${JSON.stringify(path.join(root, 'tools/funding'))});
     funding.floatHealth = funding._sdkReady = () => new Promise(() => {});
-    if (process.env.WALLET_BACKEND_URL !== 'local') {
+    if (process.env.WALLET_BACKEND_URL && process.env.WALLET_BACKEND_URL !== 'local') {
       funding.configure = () => { throw new Error('Frontend must never start a funding worker'); };
       require(${JSON.stringify(path.join(root, 'tools/veive'))}).configure = () => { throw new Error('Frontend must never open accounts'); };
     }
@@ -36,7 +36,7 @@ const { Signer } = require('koilib');
     const port = portServer.address().port; await new Promise(r => portServer.close(r));
     const child = spawn(process.execPath, ['--require', preload, 'server.js'], {
       cwd: root, env: { PATH: process.env.PATH, PORT: String(port), DATA_DIR: data,
-        WALLET_BACKEND_URL: backendUrl, KOINOS_NETWORK: 'mainnet', DEMO_MODE: '0',
+        ...(backendUrl === 'local' ? {} : { WALLET_BACKEND_URL: backendUrl }), KOINOS_NETWORK: 'mainnet', DEMO_MODE: '0',
         PUBLIC_URL: backendUrl === 'local' ? 'https://wallet.usekoinos.com' : 'https://koinvault.app',
         PASSKEY_RPID: backendUrl === 'local' ? 'wallet.usekoinos.com' : 'koinvault.app',
         SPONSOR_WIF: Signer.fromSeed('startup-test-only-sponsor').getPrivateKey('wif'),
