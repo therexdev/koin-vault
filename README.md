@@ -19,6 +19,10 @@ documentation target koinvault.app.
 **Start here: [Deployment and existing-wallet migration](docs/koinvault-deployment.md).**
 Copy the existing data and environment at deployment time; neither belongs in Git.
 
+**For website developers: [Add KOIN Vault to your website](docs/website-integration.md).**
+The guide covers domain approval, QR/link pairing, contract-call requests,
+transaction status, and wallet-side disconnect handling using the current HTTP API.
+
 ## How an account is born
 
 ```
@@ -606,6 +610,9 @@ node server.js
 | `PUBLIC_URL` | `https://koinvault.app` | canonical wallet origin used in connection QR codes (recommended behind a proxy) |
 
 ## Connect to Koinos apps
+
+See the [website integration guide](docs/website-integration.md) for setup,
+JavaScript examples, endpoint formats, and current limitations.
 
 Connection approvals require a fresh WebAuthn assertion, checked for origin, relying-party ID, user presence and user verification. The server reads the account's registered public key from the blockchain and verifies the P-256 signature locally: running the WASM signature verifier in a public RPC read can exceed its compute limit. Browser-supplied or cached keys are never accepted. Transaction signatures still receive on-chain verification. Challenges expire after two minutes and can be used only once. Read failures refuse the connection. Existing connections must be paired again after this update. Opening the wallet starts at the passkey unlock screen; restoring an address does not unlock it. New transaction requests open the Security tab and focus the approval card while the wallet is visible. Browsers cannot automatically foreground a closed or background mobile app: reopen KOIN Vault to receive pending requests. Recovery mode cannot connect or approve dApp requests.
 
