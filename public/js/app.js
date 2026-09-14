@@ -15,6 +15,7 @@
   let CREDENTIALS = [];    // [{id, label, kind, ts}] — this account's keys
   let RECOVERY = null;     // {credentialId, privateKey} while in recovery mode
   let PENDING_BACKUP = null; // a captured-but-unregistered backup passkey
+  let RESUMING = null;      // public account identity being refreshed after reopening
   let BALANCE_SATS = '';   // the chain's own integer balance, for "Send all"
   let VHP_BALANCE_SATS = '';
   let TOKEN_BALANCES = {}; // fresh integers by contract; cleared on failed reads
@@ -117,7 +118,9 @@
     $('#btn-signout').hidden = view !== '#view-wallet';
     UI.onView(view);
     if (view === '#view-wallet') {
-      paint(); if (WalletClient.canBuy) Fund.refresh();
+      paint();
+      if (RESUMING) return;
+      if (WalletClient.canBuy) Fund.refresh();
       if (PENDING_INTENT) { UI.applyIntent(PENDING_INTENT); PENDING_INTENT = null; }
       if (PENDING_CONNECT && ACTIVE) { const next = PENDING_CONNECT; PENDING_CONNECT = null; void connectDapp(next).catch(e => dappSay(e.message, 'err')); }
       if (DAPP && DAPP.address === ADDRESS) startDappPoll();
@@ -126,7 +129,7 @@
   };
 
   function takeSmart(smart) {
-    if (!smart) return;
+    if (!smart || smart.address !== ADDRESS) return;
     if (Array.isArray(smart.credentials)) { CREDENTIALS = smart.credentials; renderCredentials(); }
     if (smart.step) setStep(smart.step, smart.error);
   }
@@ -150,10 +153,12 @@
   function pollStatus() {
     stopPoll();
     const id = Passkey.storedId();
+    const address = ADDRESS;
     if (!id) return;
     POLL = setInterval(async () => {
       try {
         const st = await api('/api/account-status?credentialId=' + encodeURIComponent(id));
+        if (ADDRESS !== address || Passkey.storedId() !== id || st.address !== address) return;
         takeSmart(st);
         if (st.step === 'active') paint();
         if (st.step === 'conflict') stopPoll();
@@ -165,6 +170,7 @@
      Recovery mode signs with the kit's software key; otherwise any of the
      account's passkeys — the chain accepts every registered credential. */
   async function signPrepared(tx) {
+    if (RESUMING) throw new Error('Your wallet is reconnecting. Please try again in a moment.');
     if (RECOVERY) {
       const a = await Recovery.signTx(RECOVERY.privateKey, RECOVERY.credentialId, tx.id);
       return WebauthnWire.packSignatureBlob(a);
@@ -238,7 +244,7 @@
     }
   }
   async function pollDapp() {
-    if (!DAPP || !ADDRESS || DAPP.address !== ADDRESS || document.hidden || DAPP_BUSY || DAPP_POLLING) return;
+    if (RESUMING || !DAPP || !ADDRESS || DAPP.address !== ADDRESS || document.hidden || DAPP_BUSY || DAPP_POLLING) return;
     const pair = DAPP;
     DAPP_POLLING = true;
     try {
@@ -423,7 +429,7 @@
     if (!ADDRESS) return;
     $('#addr').textContent = ADDRESS;
     UI.setContext({ address: ADDRESS, cfg, recovery: RECOVERY, active: ACTIVE, refresh: paint });
-    if (document.hidden) return;
+    if (RESUMING || document.hidden) return;
     /* A request that lands mid-poll (a send just confirmed, KOIN just
        landed) is not dropped: it runs once more as soon as this one ends. */
     if (PAINTING) { PAINT_AGAIN = true; return; }
@@ -769,6 +775,7 @@
 
   $('#btn-signout').addEventListener('click', () => {
     if (!confirm('Sign out?\n\nYour passkey (or recovery kit) re-opens this account — nothing is lost.')) return;
+    RESUMING = null; // a late restore response must not reopen a signed-out wallet
     stopPoll();
     stopDappPoll();
     if (DAPP) void api('/api/dapp/disconnect', DAPP).catch(() => {});
@@ -795,9 +802,59 @@
   });
 
   /* ---------------- resume ---------------- */
+  function resumeWallet() {
+    const address = storedAddr(), credentialId = Passkey.storedId();
+    if (!address || !credentialId) { show('#view-landing'); return; }
+    ADDRESS = address;
+    const session = { address, credentialId };
+    RESUMING = session;
+    $('#activation').hidden = false;
+    $('#activation').className = 'status';
+    $('#activation').textContent = 'Reopening your wallet…';
+    $('#btn-send').disabled = true;
+    show('#view-wallet');
+    void refreshResumedWallet(session);
+  }
+
+  async function refreshResumedWallet(session) {
+    const current = () => RESUMING === session && ADDRESS === session.address;
+    if (!current()) return;
+    try {
+      // Account identity and balances are public. Transaction authority still
+      // requires a new passkey assertion in signPrepared/connectDapp.
+      const who = await api('/api/whoami', { credentialId: session.credentialId });
+      if (!current()) return;
+      if (!who || typeof who.address !== 'string' || !Array.isArray(who.credentials) || typeof who.step !== 'string') {
+        throw new Error('Invalid account response');
+      }
+      if (who.address !== session.address) {
+        const error = new Error('The saved passkey belongs to another wallet.');
+        error.status = 404; throw error;
+      }
+      RESUMING = null;
+      takeSmart(who);
+      if (who.step !== 'active') pollStatus();
+      show('#view-wallet');
+    } catch (e) {
+      if (!current()) return;
+      if (e.status === 404) {
+        RESUMING = null; ADDRESS = null; ACTIVE = false; CREDENTIALS = [];
+        storeAddr(null); stopDappPoll(); UI.reset(); if (WalletClient.canBuy) Fund.forget();
+        show('#view-landing');
+        alertLine('Choose a saved passkey to reopen your wallet. The previous account could not be matched.');
+        return;
+      }
+      // A temporary outage is not a sign-out, and must not erase the session.
+      $('#activation').className = 'status err';
+      $('#activation').textContent = 'Wallet connection unavailable. Reconnecting automatically…';
+      setTimeout(() => { void refreshResumedWallet(session); }, 3000);
+    }
+  }
+
   DAPP = loadDapp();
   if (DAPP && !DAPP.address) saveDapp(null); // legacy connections need fresh verified approval
-  // Remembering an address is not an unlock. Reopening requires a new ceremony.
-  show(OPEN_RECOVERY ? '#view-recover' : '#view-landing');
+  // Explicit recovery links take priority over reopening the saved wallet.
+  if (OPEN_RECOVERY) show('#view-recover');
+  else resumeWallet();
   document.addEventListener('visibilitychange', () => { if (!document.hidden) void pollDapp(); });
 })();

@@ -44,7 +44,7 @@ function setup() {
   // The same stale-session guard must apply to background poll failures.
   const pollContext = vm.createContext({
     DAPP: { sessionId: 'old', secret: 'fixture', address: 'account' }, ADDRESS: 'account',
-    DAPP_BUSY: false, DAPP_POLLING: false, document: { hidden: false }, URLSearchParams,
+    RESUMING: null, DAPP_BUSY: false, DAPP_POLLING: false, document: { hidden: false }, URLSearchParams,
     api: () => new Promise((_resolve, reject) => { finish = reject; }),
     saveDapp() { throw new Error('Stale poll cleared a new session'); },
     stopDappPoll() { throw new Error('Stale poll stopped a new session'); }, dappSay() {},

@@ -5,7 +5,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '../public/js/app.js'), 'utf8');
 const parse = source.slice(source.indexOf('  let PENDING_INTENT = null;'), source.indexOf('  const VIEWS ='));
-const resume = source.slice(source.indexOf('  // Remembering an address is not an unlock.'), source.lastIndexOf('})();'));
+const resume = source.slice(source.indexOf('  // Explicit recovery links take priority'), source.lastIndexOf('})();'));
 for (const [pathname, search, view] of [
   ['/', '?open=recover', '#view-recover'],
   ['/android/', '?open=recover', '#view-recover'],
@@ -17,6 +17,7 @@ for (const [pathname, search, view] of [
     URLSearchParams, location: { pathname, search },
     history: { replaceState: (...args) => changes.push(args) },
     show: value => views.push(value),
+    resumeWallet: () => views.push('#view-landing'),
     document: { addEventListener() {} },
   });
   vm.runInContext(parse + resume, context);
