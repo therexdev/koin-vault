@@ -83,7 +83,7 @@ function validateOperations(operations) {
         || Buffer.from(call.args, 'base64url').toString('base64url') !== call.args.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')) throw new Error('invalid contract arguments');
   }
   return operations.map(({ call_contract: c }) => ({ call_contract: {
-    contract_id: c.contract_id, entry_point: Number(c.entry_point), args: Buffer.from(c.args, 'base64url').toString('base64url'),
+    contract_id: c.contract_id, entry_point: Number(c.entry_point), args: utils.encodeBase64url(Buffer.from(c.args, 'base64url')),
   } }));
 }
 
