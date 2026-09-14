@@ -179,7 +179,11 @@ still validates the signed operation. Both calls remain in one transaction,
 with the exact vETH allowance, original recipient and approved slippage floor.
 An existing job at **vETH arrived** can be retried after a refresh; it does
 not need another ETH deposit or bridge transfer. The sponsor must cover the
-full 20-mana ceiling before the wallet asks for the passkey.
+full 100-mana swap ceiling before the wallet asks for the passkey, and its
+available mana is checked again inside the submission queue. This is a
+maximum, not a fixed charge; ordinary transfers and bridge redeems retain
+their existing limits. A resource-limit rejection keeps the pending job and
+is reported separately from a sponsor that needs to regenerate mana.
 
 USDC and USDT deposits ride Route C's tail (USDC adds one hop through the
 deepest stable pair on Ethereum). The server quotes every route live, shows

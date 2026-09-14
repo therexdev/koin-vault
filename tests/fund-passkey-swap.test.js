@@ -79,12 +79,15 @@ async function decode(abi, method, op) {
     koindx.quoteSwap = async () => ({ amountOut: quoteOut, amountOutMin: '1' });
     const tap = await funding.prepareTapOps(account);
     assert.deepEqual(tap.ops, ops, 'existing jobs must get the new calls with their original approved minimum');
+    assert.equal(tap.rcLimit, '10000000000', 'existing bridged swaps need the 100-mana trade budget');
+    assert.equal(chain.K.rcLimitSmart, '2000000000', 'ordinary transfers keep their current limit');
+    assert.equal(require('../tools/eth/koinos-bridge').DEFAULT_REDEEM_RC, '2000000000', 'bridge redeems keep their current limit');
     quoteOut = '1';
     await assert.rejects(funding.prepareTapOps(account), /below your approved minimum/);
     assert.equal(funding.job(account).status, 'awaiting_swap');
     quoteOut = amountOut;
 
-    let availableMana = 19, threshold = 1, submitted = 0, rejectSubmit = true;
+    let availableMana = 99, threshold = 1, submitted = 0, submitError = new Error('RPC rejected the transaction');
     const prepared = new Map();
     const ctx = vm.createContext({ api: {}, DEMO: false, CFG: { minSponsorMana: 5 },
       PREPARED: prepared, structuredClone, fundAccount: () => account,
@@ -105,9 +108,10 @@ async function decode(abi, method, op) {
         prepareSelfPaidTx: async (address, operations, { rcLimit }) => Transaction.prepareTransaction({
           header: { chain_id: b64(Buffer.from('1220' + 'ab'.repeat(32), 'hex')), nonce: 'CAE=', payer: address, rc_limit: rcLimit }, operations,
         }),
-        submitSmartCosigned: async tx => {
+        submitSmartCosigned: async (tx, id, address, credentials, options) => {
+          assert.equal(options.checkMana, true, 'funding submissions must check current payer mana inside the queue');
           submitted++;
-          if (rejectSubmit) throw new Error('RPC rejected the transaction');
+          if (submitError) throw submitError;
           return tx.id;
         },
       },
@@ -117,8 +121,12 @@ async function decode(abi, method, op) {
     vm.runInContext(source.slice(source.indexOf('api.submit ='), source.indexOf('/** Demo-mode teeth:')), ctx);
     await assert.rejects(ctx.api.fundPrepareStep({}), /mana needed for this step/);
     assert.equal(prepared.size, 0, 'check the entire ceiling before asking for a passkey');
-    availableMana = 20;
+    availableMana = 100;
     const prep = await ctx.api.fundPrepareStep({});
+    assert.equal(prep.tx.header.rc_limit, '10000000000');
+    assert.equal(Transaction.computeTransactionId(prep.tx.header), prep.tx.id);
+    assert.notEqual(Transaction.computeTransactionId({ ...prep.tx.header, rc_limit: '2000000000' }), prep.tx.id,
+      'the larger ceiling must be covered by a fresh passkey signature');
     const signed = { ...prep.tx, signatures: ['test-passkey'] };
     await assert.rejects(ctx.api.submit({ ref: prep.ref, transaction: signed }), /RPC rejected/);
     assert.equal(funding.job(account).status, 'awaiting_swap', 'failure must keep the existing swap resumable');
@@ -137,15 +145,40 @@ async function decode(abi, method, op) {
     const selfPaid = await ctx.api.fundPrepareStep({});
     assert.equal(selfPaid.selfPaid, true);
     assert.equal(selfPaid.tx.header.payer, account);
+    assert.equal(selfPaid.tx.header.rc_limit, '10000000000');
     assert.deepEqual(selfPaid.tx.operations, ops, 'legacy self-paid accounts also use the wrapped calls');
     threshold = 1;
-    rejectSubmit = false;
+
+    for (const [error, status, message] of [
+      [new Error('insufficient rc [sign module: unreadable: compute bandwidth limit exceeded; validator threshold 1]'), 409, /exceeded its signed mana limit \(100 mana\)/],
+      [Object.assign(new Error('payer does not have the rc to cover transaction rc limit'), { code: 'INSUFFICIENT_PAYER_MANA' }), 503, /sponsor wallet is recharging/],
+      [new Error('payer does not have the rc to cover transaction rc limit [sign module: accepted]'), 503, /sponsor wallet is recharging/],
+    ]) {
+      submitError = error;
+      const next = await ctx.api.fundPrepareStep({});
+      await assert.rejects(ctx.api.submit({ ref: next.ref, transaction: { ...next.tx, signatures: ['test-passkey'] } }), e => {
+        assert.equal(e.status, status);
+        assert.match(e.message, message);
+        assert.match(e.message, /No additional deposit/);
+        assert.doesNotMatch(e.message, /sign module|invalid passkey/);
+        return true;
+      });
+      assert.equal(funding.job(account).status, 'awaiting_swap');
+      assert.equal(funding.job(account).redeemId, 'existing-bridge-redeem');
+    }
+    submitError = Object.assign(new Error('insufficient rc while confirmation was unavailable'), { broadcast: true, txId: 'pending-chain-id' });
+    const uncertain = await ctx.api.fundPrepareStep({});
+    await assert.rejects(ctx.api.submit({ ref: uncertain.ref, transaction: { ...uncertain.tx, signatures: ['test-passkey'] } }), e => e === submitError,
+      'ambiguous submissions must preserve the transaction ID and confirmation status');
+    assert.equal(funding.job(account).status, 'awaiting_swap');
+
+    submitError = null;
     const retry = await ctx.api.fundPrepareStep({});
     const result = await ctx.api.submit({ ref: retry.ref, transaction: { ...retry.tx, signatures: ['test-passkey'] } });
     assert.equal(funding.job(account).status, 'done');
     assert.equal(funding.job(account).swapId, result.txid);
     assert.equal(funding.job(account).redeemId, 'existing-bridge-redeem');
-    assert.equal(submitted, 2);
+    assert.equal(submitted, 6);
     console.log('fund passkey swap: wrapped calls, exact amounts, slippage, mana, tamper rejection and existing-job retry passed');
   } finally {
     koindx.quoteSwap = originalQuote;

@@ -233,6 +233,18 @@ function queueTx(fn) {
   return run;
 }
 
+/** A passkey prompt and another queued transaction can separate preparation
+    from broadcast. Check the actual signed ceiling inside the send queue;
+    never lower it or change the payer after the user's signature. */
+async function assertTransactionMana(tx) {
+  const available = BigInt(await withRpcRetry(() => provider().getAccountRc(tx.header.payer)));
+  if (available < BigInt(tx.header.rc_limit)) {
+    const err = new Error('payer does not have the rc to cover transaction rc limit');
+    err.code = 'INSUFFICIENT_PAYER_MANA';
+    throw err;
+  }
+}
+
 async function opKoinTransfer(from, to, valueSats) {
   const { operation } = await koinContract().functions.transfer(
     { from, to, value: String(valueSats) }, { onlyOperation: true });
@@ -734,7 +746,7 @@ async function prepareSelfPaidTx(accountAddr, ops, { rcLimit = K.rcLimit } = {})
 
 /** Broadcast a self-paid transaction: the passkey blob is the ONLY
     signature — the sponsor deliberately does not co-sign. */
-async function submitSelfPaid(signedTx, preparedId, accountAddr, expectedCredentialIds) {
+async function submitSelfPaid(signedTx, preparedId, accountAddr, expectedCredentialIds, { checkMana = false } = {}) {
   if (!signedTx || signedTx.id !== preparedId) throw new Error('transaction does not match the prepared action');
   if (Transaction.computeTransactionId(signedTx.header) !== preparedId) throw new Error('transaction header was altered');
   const sigs = (signedTx.signatures || []).slice();
@@ -747,6 +759,7 @@ async function submitSelfPaid(signedTx, preparedId, accountAddr, expectedCredent
   }
   const clean = { id: signedTx.id, header: signedTx.header, operations: signedTx.operations, signatures: sigs };
   return queueTx(async () => {
+    if (checkMana) await assertTransactionMana(clean);
     const tx = new Transaction({ provider: provider() });
     tx.transaction = clean;
     try { await sendTolerant(tx); }
@@ -789,7 +802,7 @@ async function ensureManaFor(accountAddr, rcLimitSats) {
   return { toppedUp: true, topUpSats: short.toString(), txId };
 }
 
-async function submitSmartCosigned(signedTx, preparedId, accountAddr, expectedCredentialIds) {
+async function submitSmartCosigned(signedTx, preparedId, accountAddr, expectedCredentialIds, { checkMana = false } = {}) {
   if (!signedTx || signedTx.id !== preparedId) throw new Error('transaction does not match the prepared action');
   const recomputed = Transaction.computeTransactionId(signedTx.header);
   if (recomputed !== preparedId) throw new Error('transaction header was altered');
@@ -822,6 +835,7 @@ async function submitSmartCosigned(signedTx, preparedId, accountAddr, expectedCr
     operations: signedTx.operations, signatures: [],
   };
   return queueTx(async () => {
+    if (checkMana) await assertTransactionMana(clean);
     /* Sponsor first, blob second — see sendAsAccount for why order matters. */
     await sponsor().signTransaction(clean);
     clean.signatures = clean.signatures.concat(sigs);
