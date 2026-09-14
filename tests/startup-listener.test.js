@@ -73,6 +73,22 @@ const { Signer } = require('koilib');
     assert.match(frontend.logs(), /ready: wallet frontend/);
     const connection = await (await fetch(frontend.base + '/api/dapp/create', { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: 'https://ouro.lifestyle' }, body: JSON.stringify({ name: 'OURO' }) })).json();
     assert.ok(connection.uri.startsWith('https://koinvault.app/'));
+    for (const origin of ['https://usekoinos.com', 'https://www.usekoinos.com']) {
+      const headers = { Origin: origin, 'Content-Type': 'application/json' };
+      const preflight = await fetch(frontend.base + '/api/dapp/create', { method: 'OPTIONS', headers });
+      assert.equal(preflight.headers.get('access-control-allow-origin'), origin);
+      const created = await fetch(frontend.base + '/api/dapp/create', { method: 'POST', headers, body: JSON.stringify({ name: 'Use Koinos' }) });
+      assert.equal(created.status, 200);
+      assert.equal(created.headers.get('access-control-allow-origin'), origin);
+      const pair = await created.json();
+      assert.equal(new URL(pair.uri).origin, 'https://koinvault.app');
+      const status = await fetch(frontend.base + '/api/dapp/status?' + new URLSearchParams({ sessionId: pair.sessionId, secret: pair.secret }), { headers });
+      assert.equal(status.headers.get('access-control-allow-origin'), origin);
+      assert.equal((await status.json()).connected, false);
+    }
+    const denied = await fetch(frontend.base + '/api/dapp/create', { method: 'POST', headers: { Origin: 'https://usekoinos.com.evil.example', 'Content-Type': 'application/json' }, body: '{}' });
+    assert.equal(denied.status, 403);
+    assert.equal(denied.headers.get('access-control-allow-origin'), null);
     const proofBody = JSON.stringify({ sessionId: connection.sessionId, secret: connection.secret, address: account });
     assert.equal((await fetch(frontend.base + '/api/dapp/challenge', { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: 'https://koinvault.app' }, body: proofBody })).status, 200);
     assert.equal((await fetch(frontend.base + '/api/dapp/challenge', { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: 'https://evil.example' }, body: proofBody })).status, 403);

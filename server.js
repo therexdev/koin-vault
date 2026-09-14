@@ -92,7 +92,7 @@ const CFG = {
   maxAccountsPerDayIp: parseInt(process.env.MAX_ACCOUNTS_PER_DAY || '3', 10),
   maxAccountsPerDayGlobal: parseInt(process.env.MAX_ACCOUNTS_PER_DAY_GLOBAL || '20', 10),
   maxCredentialsPerAccount: parseInt(process.env.MAX_CREDENTIALS_PER_ACCOUNT || '32', 10),
-  dappOrigins: String(process.env.DAPP_ORIGINS || 'https://trade.koinoskit.site,https://app.tradekoinos.com,https://ouro.lifestyle,https://www.ouro.lifestyle,https://koinosai.com')
+  dappOrigins: String(process.env.DAPP_ORIGINS || 'https://trade.koinoskit.site,https://app.tradekoinos.com,https://ouro.lifestyle,https://www.ouro.lifestyle,https://koinosai.com,https://usekoinos.com,https://www.usekoinos.com')
     .split(',').map((x) => x.trim().replace(/\/+$/, '')).filter(Boolean),
   publicUrl: String(process.env.PUBLIC_URL || 'https://koinvault.app').trim().replace(/\/+$/, ''),
   demo: process.env.DEMO_MODE === '1',

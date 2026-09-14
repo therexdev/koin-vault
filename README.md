@@ -817,3 +817,17 @@ approval. It rejects unrelated calls and excessive burn allowances. Wallet
 approval submits through the existing sponsored smart-account transaction
 flow. The phone never exports a private key. Disconnecting cancels unsubmitted
 requests, but cannot undo transactions already submitted to the chain.
+
+### Use Koinos QR connection
+
+Allow `https://usekoinos.com` and `https://www.usekoinos.com` in the active
+wallet backend's `DAPP_ORIGINS` setting, preserving its existing origins. Restart
+that service after changing its environment. When KOIN Vault forwards requests
+through `WALLET_BACKEND_URL`, the upstream backend enforces this setting; changing
+only the frontend environment does not change the upstream allowlist.
+
+The browser first calls `/api/dapp/create`, then renders the returned pairing URI
+as a local QR code, just like OURO and Trade Koinos. A preflight response without
+`Access-Control-Allow-Origin` for the requesting site produces “Failed to fetch”
+before the QR can appear. Do not solve this with a wildcard or by substituting
+another application's Origin.
