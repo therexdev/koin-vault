@@ -245,18 +245,22 @@
 
       <div class="card">
         <div class="k">Connected apps</div>
-        <p class="hint">Scan a connection QR from a Koinos app. Every transaction still needs your passkey approval.</p>
+        <p class="hint">Choose the sites you connect to. Scan their KOIN Vault QR, then approve access. Every transaction needs your passkey.</p>
         <div class="status" id="dapp-status" role="status" aria-live="polite" hidden></div>
         <div id="dapp-request" hidden>
           <h3 id="dapp-title">Transaction request</h3>
-          <p class="sub" id="dapp-detail"></p>
+          <p class="sub dapp-review" id="dapp-detail"></p>
           <dl class="details">
             <div><dt>App</dt><dd id="dapp-name"></dd></div>
             <div><dt>Site</dt><dd class="mono" id="dapp-origin"></dd></div>
             <div><dt>Contract calls</dt><dd id="dapp-ops"></dd></div>
             <div><dt>Network</dt><dd id="dapp-network"></dd></div>
+            <div><dt>Mana paid by</dt><dd class="mono" id="dapp-payer"></dd></div>
+            <div><dt>Maximum mana</dt><dd id="dapp-mana"></dd></div>
           </dl>
-          <p class="foot">Check the app and action carefully. Your passkey signs the exact transaction shown here.</p>
+          <p class="status err dapp-review" id="dapp-warnings" hidden></p>
+          <label class="dapp-ack" id="dapp-ack-row" hidden><input id="dapp-ack" type="checkbox"> I understand these permissions and risks.</label>
+          <p class="foot">Details are decoded by KOIN Vault. Check the full addresses. Connecting does not endorse a website or contract.</p>
           <div class="btn-row two">
             <button class="ghost" id="btn-dapp-reject" type="button">Reject</button>
             <button class="cta small lock" id="btn-dapp-approve" type="button">Approve with passkey</button>
@@ -265,7 +269,10 @@
         <div class="btn-row">
           <button class="ghost wide" id="btn-connect-app-security" type="button"><svg class="ic ic-18"><use href="#i-qr"/></svg> Scan connection QR</button>
           <button class="linkish danger block" id="btn-dapp-disconnect" type="button" hidden>Disconnect app</button>
+          <button class="linkish danger block" id="btn-dapp-block" type="button" hidden>Block this site</button>
         </div>
+        <details id="dapp-blocked"><summary>Blocked sites on this device</summary><div id="dapp-blocked-list"></div></details>
+        <a class="linkish block" href="https://github.com/therexdev/koin-vault/blob/main/docs/website-integration.md" target="_blank" rel="noopener noreferrer">Add KOIN Vault to your website</a>
       </div>
 
       <div class="card">

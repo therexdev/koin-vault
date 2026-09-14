@@ -182,10 +182,11 @@
 
   /* ---------------- connected apps ----------------
      The QR contains an expiring random session + bearer secret, never a key.
-     The app can queue contract calls, but this wallet prepares the sponsored
+     The app can queue contract calls, but this wallet prepares the exact
      transaction and requires a fresh passkey assertion before broadcasting. */
   function saveDapp(value) {
     DAPP = value;
+    $('#btn-dapp-block').hidden = !value?.origin;
     try { value ? localStorage.setItem('bw_dapp_session', JSON.stringify(value)) : localStorage.removeItem('bw_dapp_session'); } catch (_) {}
   }
   function loadDapp() {
@@ -195,6 +196,33 @@
   function dappSay(message, kind) {
     const el = $('#dapp-status'); el.hidden = !message; el.className = 'status' + (kind ? ' ' + kind : ''); el.textContent = message || '';
   }
+  function blockedDapps() {
+    try {
+      const saved = JSON.parse(localStorage.getItem('bw_dapp_blocked:' + ADDRESS) || '[]');
+      return Array.isArray(saved) ? saved.filter(s => typeof s === 'string' && s.startsWith('https://')) : [];
+    } catch (_) { return []; }
+  }
+  function isDappBlocked(origin) { return !!origin && blockedDapps().includes(origin); }
+  function paintBlockedDapps() {
+    const list = $('#dapp-blocked-list'); list.replaceChildren();
+    const sites = blockedDapps();
+    if (!sites.length) { list.textContent = 'No sites blocked for this wallet on this device.'; return; }
+    for (const site of sites) {
+      const row = document.createElement('p'), name = document.createElement('span'), button = document.createElement('button');
+      name.textContent = site + ' '; button.textContent = 'Unblock'; button.className = 'linkish'; button.type = 'button';
+      button.addEventListener('click', () => {
+        try {
+          localStorage.setItem('bw_dapp_blocked:' + ADDRESS, JSON.stringify(blockedDapps().filter(s => s !== site)));
+          paintBlockedDapps();
+        } catch (_) { dappSay('Could not save blocked sites on this device.', 'err'); }
+      });
+      row.append(name, button); list.append(row);
+    }
+  }
+  $('#dapp-blocked').addEventListener('toggle', paintBlockedDapps);
+  window.addEventListener('storage', event => {
+    if (event.key === 'bw_dapp_blocked:' + ADDRESS) { paintBlockedDapps(); void pollDapp(); }
+  });
   function parseConnect(raw) {
     try {
       const url = new URL(String(raw || ''), location.origin);
@@ -210,11 +238,13 @@
     if (RECOVERY) throw new Error('Sign in with a passkey to connect an app. Recovery mode cannot approve app access.');
     const query = new URLSearchParams(pair);
     const info = await api('/api/dapp/status?' + query);
-    if (!confirm(`${info.name} wants to connect to this wallet.\n\nSite: ${info.origin}\nAccount: ${ADDRESS}\n\nConnecting lets it request transactions. Every transaction still needs your passkey approval.`)) return;
+    if (isDappBlocked(info.origin)) throw new Error('You blocked this site on this device. Unblock it under Security to connect.');
+    if (!confirm(`Connect to ${info.origin}?\n\nApp name (provided by the site): ${info.name}\nAccount: ${ADDRESS}\n\nThis shares your address and lets the site request transactions. Each transaction needs your passkey. KOIN Vault has not verified this website.`)) return;
     const proof = await api('/api/dapp/challenge', { ...pair, address: ADDRESS });
     const assertion = await Passkey.assert(new TextEncoder().encode(proof.challenge), CREDENTIALS.filter(c => c.kind === 'passkey').map(c => c.id));
     await api('/api/dapp/connect', { ...pair, address: ADDRESS, credentialId: assertion.credentialId, challenge: proof.challenge, signature: WebauthnWire.packSignatureBlob(assertion) });
-    saveDapp({ ...pair, address: ADDRESS }); dappSay(`Connected to ${info.name}`, 'ok'); $('#btn-dapp-disconnect').hidden = false; startDappPoll();
+    if (isDappBlocked(info.origin)) { await api('/api/dapp/disconnect', pair); throw new Error('This site is blocked'); }
+    saveDapp({ ...pair, address: ADDRESS, origin: info.origin }); dappSay(`Connected to ${info.origin}`, 'ok'); $('#btn-dapp-disconnect').hidden = false; startDappPoll();
   }
   async function scanDapp() {
     try { const hit = await QR.scan(); if (hit) await connectDapp(parseConnect(hit.raw || hit.address)); }
@@ -225,17 +255,25 @@
     DAPP_REQUEST = request;
     $('#dapp-request').hidden = !request;
     if (!request) return;
-    $('#dapp-title').textContent = request.summary.title;
-    $('#dapp-detail').textContent = request.summary.detail || 'Review this request in the app before approving.';
+    const review = request.review, reviewed = review?.version === 1 && !!request.funding;
+    $('#dapp-title').textContent = reviewed ? review.title : 'New transaction review required';
+    $('#dapp-detail').textContent = reviewed ? review.actions.map((action, i) => `${i + 1}. ${action.title}\nContract: ${action.contract}\n${action.detail}`).join('\n\n')
+      : 'Ask the website to create a new request using the updated wallet.';
     $('#dapp-name').textContent = app.name;
     $('#dapp-origin').textContent = app.origin;
     $('#dapp-ops').textContent = request.operations.map((op) => {
       if (op.upload_contract) return `Deploy collection ${op.upload_contract.contract_id}`;
       const call = op.call_contract || {};
-      const id = String(call.contract_id || 'unknown');
-      return `${id.slice(0, 7)}…${id.slice(-5)} · entry ${call.entry_point}`;
+      return `${call.contract_id || 'unknown'} · entry ${call.entry_point}`;
     }).join(' | ');
-    $('#dapp-network').textContent = request.summary.network || NET;
+    $('#dapp-network').textContent = reviewed ? review.network : NET;
+    $('#dapp-payer').textContent = reviewed ? `${request.funding.payer === 'sponsor' ? 'KOIN Vault sponsor' : request.funding.payer === 'app' ? 'Requesting app' : 'Your wallet'} · ${request.funding.address}` : 'Unavailable';
+    $('#dapp-mana').textContent = reviewed ? `${request.funding.maxMana} mana. Only actual usage is consumed; no KOIN fee.` : 'Unavailable';
+    const warnings = reviewed ? review.warnings : [];
+    $('#dapp-warnings').textContent = warnings.join('\n\n'); $('#dapp-warnings').hidden = !warnings.length;
+    $('#dapp-ack-row').hidden = !reviewed || !review.requiresAcknowledgement;
+    if (isNew) $('#dapp-ack').checked = false;
+    $('#btn-dapp-approve').disabled = !reviewed || (review.requiresAcknowledgement && !$('#dapp-ack').checked);
     if (isNew) {
       UI.showTab('tab-security');
       $('#dapp-request').scrollIntoView({ block: 'center' });
@@ -250,9 +288,15 @@
     try {
       const data = await api('/api/dapp/pending?' + new URLSearchParams(DAPP));
       if (DAPP !== pair || DAPP_BUSY || !ADDRESS) return;
+      if (isDappBlocked(data.app.origin)) {
+        await api('/api/dapp/disconnect', pair);
+        if (DAPP === pair) { saveDapp(null); stopDappPoll(); paintDappRequest(null, null); $('#btn-dapp-disconnect').hidden = true; }
+        return;
+      }
+      if (pair.origin !== data.app.origin) { pair.origin = data.app.origin; saveDapp(pair); }
       $('#btn-dapp-disconnect').hidden = false;
       paintDappRequest(data.app, data.requests[0] || null);
-      if (!data.requests.length) dappSay(`Connected to ${data.app.name}`, 'ok');
+      if (!data.requests.length) dappSay(`Connected to ${data.app.origin}`, 'ok');
     } catch (e) {
       if (DAPP !== pair || !ADDRESS) return;
       dappSay(e.status === 404 ? 'Connection expired. Scan a new QR to reconnect.' : 'Cannot receive app requests: ' + e.message, 'err');
@@ -263,26 +307,50 @@
   function stopDappPoll() { if (DAPP_POLL) { clearInterval(DAPP_POLL); DAPP_POLL = null; } }
   $('#btn-connect-app').addEventListener('click', scanDapp);
   $('#btn-connect-app-security').addEventListener('click', scanDapp);
+  $('#dapp-ack').addEventListener('change', () => {
+    $('#btn-dapp-approve').disabled = DAPP_BUSY || !DAPP_REQUEST?.review || (DAPP_REQUEST.review.requiresAcknowledgement && !$('#dapp-ack').checked);
+  });
   $('#btn-dapp-approve').addEventListener('click', async () => {
     if (!DAPP || !DAPP_REQUEST || DAPP_BUSY) return;
     if (RECOVERY) { dappSay('Sign in with a passkey to approve app transactions.', 'err'); return; }
     const pair = DAPP, request = DAPP_REQUEST;
+    if (isDappBlocked(pair.origin) || request.review?.version !== 1 || !request.funding) return;
+    if (request.review.requiresAcknowledgement && !$('#dapp-ack').checked) return;
     DAPP_BUSY = true;
     const btn = $('#btn-dapp-approve'); btn.disabled = true;
     $('#btn-dapp-reject').disabled = true;
     try {
       dappSay('Confirm with your passkey…');
       const blob = await signPrepared(request.transaction);
-      if (DAPP !== pair || pair.address !== ADDRESS) throw new Error('Wallet account changed; reconnect');
-      const result = await api('/api/dapp/approve', { ...pair, requestId: request.id, transaction: { ...request.transaction, signatures: [blob] } });
+      if (DAPP !== pair || pair.address !== ADDRESS || isDappBlocked(pair.origin)) throw new Error('Wallet connection changed; reconnect');
+      const result = await api('/api/dapp/approve', { ...pair, requestId: request.id, acknowledged: $('#dapp-ack').checked, transaction: { ...request.transaction, signatures: [blob] } });
       paintDappRequest(null, null); dappSay(result.signedOnly ? 'Launch approved. Return to OURO to follow deployment.' : `Approved · ${result.txid.slice(0, 14)}…`, 'ok'); void paint();
     } catch (e) { dappSay(friendly(e), 'err'); }
-    finally { btn.disabled = false; $('#btn-dapp-reject').disabled = false; DAPP_BUSY = false; }
+    finally {
+      DAPP_BUSY = false;
+      btn.disabled = !DAPP_REQUEST?.review || (DAPP_REQUEST.review.requiresAcknowledgement && !$('#dapp-ack').checked);
+      $('#btn-dapp-reject').disabled = false;
+    }
   });
   $('#btn-dapp-reject').addEventListener('click', async () => {
     if (!DAPP || !DAPP_REQUEST) return;
     try { await api('/api/dapp/reject', { ...DAPP, requestId: DAPP_REQUEST.id }); paintDappRequest(null, null); dappSay('Request rejected'); }
     catch (e) { dappSay(e.message || 'Could not reject request', 'err'); }
+  });
+  $('#btn-dapp-block').addEventListener('click', async () => {
+    const pair = DAPP, button = $('#btn-dapp-block');
+    if (!pair?.origin || button.disabled || !confirm(`Block ${pair.origin} for this wallet on this device?`)) return;
+    button.disabled = true;
+    try {
+      const sites = [...new Set([...blockedDapps(), pair.origin])];
+      localStorage.setItem('bw_dapp_blocked:' + ADDRESS, JSON.stringify(sites));
+      paintBlockedDapps();
+      try { await api('/api/dapp/disconnect', pair); }
+      catch (e) { if (e.status !== 404 && e.status !== 410) throw e; }
+      if (DAPP === pair) { saveDapp(null); stopDappPoll(); paintDappRequest(null, null); $('#btn-dapp-disconnect').hidden = true; }
+      dappSay('Site blocked on this device and disconnected.', 'ok');
+    } catch (e) { dappSay('Site could not be fully disconnected. Retry when online. ' + e.message, 'err'); }
+    finally { button.disabled = false; }
   });
   $('#btn-dapp-disconnect').addEventListener('click', async () => {
     const pair = DAPP, btn = $('#btn-dapp-disconnect');

@@ -19,6 +19,9 @@ documentation target koinvault.app.
 **Start here: [Deployment and existing-wallet migration](docs/koinvault-deployment.md).**
 Copy the existing data and environment at deployment time; neither belongs in Git.
 
+**For website developers: [Add KOIN Vault to your website](docs/website-integration.md).**
+Any HTTPS website can request a connection; the user decides in KOIN Vault.
+
 ## How an account is born
 
 ```
@@ -602,15 +605,41 @@ node server.js
 | `DEMO_MODE` | — | `1` forces demo mode |
 | `ANDROID_SHA256_FINGERPRINTS` | — | SHA-256 fingerprint(s) of the Android app's signing certificate, comma-separated — serves `/.well-known/assetlinks.json` (see **Android app**) |
 | `ANDROID_PACKAGE` | `wallet.koinos.app` | the Android app's package name |
-| `DAPP_ORIGINS` | Trade Koinos production origins | comma-separated HTTPS origins allowed to create KOIN Vault connection sessions |
+| `DAPP_SPONSOR_MANA_PER_DAY` | `5000` | shared UTC daily dApp sponsorship ceiling, in whole mana |
+| `DAPP_SPONSOR_MANA_PER_ACCOUNT_DAY` | `500` | per-account UTC daily sponsorship ceiling |
+| `DAPP_SPONSOR_MANA_PER_SITE_DAY` | `1000` | per-origin UTC daily sponsorship ceiling |
 | `PUBLIC_URL` | `https://koinvault.app` | canonical wallet origin used in connection QR codes (recommended behind a proxy) |
 
 ## Connect to Koinos apps
 
 Connection approvals require a fresh WebAuthn assertion, checked for origin, relying-party ID, user presence and user verification. The server reads the account's registered public key from the blockchain and verifies the P-256 signature locally: running the WASM signature verifier in a public RPC read can exceed its compute limit. Browser-supplied or cached keys are never accepted. Transaction signatures still receive on-chain verification. Challenges expire after two minutes and can be used only once. Read failures refuse the connection. Existing connections must be paired again after this update. Opening the wallet starts at the passkey unlock screen; restoring an address does not unlock it. New transaction requests open the Security tab and focus the approval card while the wallet is visible. Browsers cannot automatically foreground a closed or background mobile app: reopen KOIN Vault to receive pending requests. Recovery mode cannot connect or approve dApp requests.
 
-The Home screen's **Connect** button scans an expiring QR code from a supported app. The QR contains only a random session id and secret. It never contains a private key, passkey, or reusable signature. Connected apps may request contract-call transactions; KOIN Vault rebuilds each transaction with the smart account as payee, shows the requesting site and contract calls, and requires a fresh passkey approval before the sponsor co-signs and broadcasts it. Sessions expire after 30 minutes, requests after 10 minutes, and the user can reject a request or disconnect the app at any time.
+The Home screen's **Connect** button scans an expiring QR code from any HTTPS
+website. The QR contains a random session ID and bearer secret, never a key or
+reusable signature. The user sees the exact origin and decides whether to share
+an address and allow transaction requests. This does not endorse the website.
 
+KOIN Vault decodes operations itself, showing full contract and recipient
+addresses, amounts, spending permissions, the configured network, mana payer
+and signed maximum. Site-provided descriptions cannot replace this review.
+Unfamiliar actions show their raw arguments and require acknowledgement;
+spending permissions warn that later token spends may not need another passkey.
+Each requested transaction requires a fresh passkey assertion.
+
+Native KOIN/VHP actions using the connected account's authority and supported
+PoB combinations are eligible for capped sponsorship. Arbitrary/custom contract
+calls use the user's own mana and receive no Vault sponsor signature. Native
+requests also require freshly verified standard account code and modules;
+modified accounts use their own mana. The signed account nonce is rechecked.
+Native requests also use the user's mana if sponsor capacity or daily budgets are
+unavailable. The payer is chosen before signing and never silently changed
+later. The persistent daily budget charges each signed maximum, including
+failed or uncertain submissions. See the integration guide for exact limits.
+
+Sessions last 30 minutes and requests at most 10 minutes. The user can reject,
+disconnect, or block a site's exact origin for the current wallet on this device.
+Blocked sites persist locally and can be unblocked under Security; they do not
+sync across devices.
 Wallet-side disconnect revokes the relay session before reporting success. A failed
 network request keeps the connection available for retry. OURO and Trade Koinos
 check their active sessions every two seconds and on tab focus, visibility return,
@@ -633,7 +662,9 @@ the transaction. OURO independently verifies it, adds its sponsor signature,
 and broadcasts fee and upload together. Ordinary dApp requests still reject
 contract uploads. Deploy both repositories before testing a paid launch.
 
-Set `DAPP_ORIGINS` to the exact deployed origins. Do not use `*`; origin allowlisting and the per-session secret are separate protections.
+The old `DAPP_ORIGINS` setting is no longer used. CORS reflects valid HTTPS
+origins for website endpoints; wallet approval endpoints remain wallet-only.
+Session secrets, matching origins and passkey verification are required independently.
 
 Missing sponsor **or** module addresses ⇒ the app boots in demo mode and says
 why on `/api/config`.
@@ -797,27 +828,23 @@ References: [PWA installation](https://web.dev/learn/pwa/installation-prompt),
 ### Koinos AI producer signing
 
 Koinos AI Test can pair with Koin Vault using **Connect App** and a QR code.
-Its origin is `https://koinosai.com`; deployments that override `DAPP_ORIGINS`
-must include that origin. `/api/config` advertises `features.kaiProducer` only
-when this deployment allows KAI and uses live Mainnet. Update the authoritative
-`wallet.usekoinos.com` backend too when Koin Vault runs as its frontend proxy.
+Its origin is `https://koinosai.com`; no manual origin approval is required.
+`/api/config` advertises `features.kaiProducer` when Vault uses live Mainnet.
 
 KAI requests only PoB hot-key registration, a burn to the connected wallet's
 own VHP, or a KOIN/VHP transfer. The backend decodes the actual operations to
 show the producer, full hot public key, amount and recipient before passkey
 approval. It rejects unrelated calls and excessive burn allowances. Wallet
-approval submits through the existing sponsored smart-account transaction
-flow. The phone never exports a private key. Disconnecting cancels unsubmitted
+approval uses capped sponsorship when available, otherwise the wallet's own
+mana, with the payer shown before signing. The phone never exports a private key. Disconnecting cancels unsubmitted
 requests, but cannot undo transactions already submitted to the chain.
 
 ### Use Koinos QR connection
 
-Allow `https://usekoinos.com` and `https://www.usekoinos.com` in the active
-wallet backend's `DAPP_ORIGINS` setting, preserving its existing origins. Restart
-that service after changing its environment. When KOIN Vault forwards requests
-through `WALLET_BACKEND_URL`, the upstream backend enforces this setting; changing
-only the frontend environment does not change the upstream allowlist.
-
+Both `https://usekoinos.com` and `https://www.usekoinos.com` can request
+connections without configuration. Each origin creates and uses its own sessions.
+Deploy the updated standalone Vault backend for open connections; a frontend
+proxy cannot add this behavior to an unchanged upstream.
 The browser first calls `/api/dapp/create`, then renders the returned pairing URI
 as a local QR code, just like OURO and Trade Koinos. A preflight response without
 `Access-Control-Allow-Origin` for the requesting site produces “Failed to fetch”

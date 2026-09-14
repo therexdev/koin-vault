@@ -22,8 +22,24 @@ KOIN Vault defaults to a standalone backend. No old-wallet code change is needed
 7. Test existing Vault sign-in, activated-kit recovery, new passkey registration,
    token sending, and a Use Koinos QR approval on a real device.
 
-Use Koinos is in the default origin list. No `DAPP_ORIGINS` override is needed;
-if one exists, preserve other apps and include both Use Koinos domains.
+Any HTTPS website can request a user-approved connection. `DAPP_ORIGINS` is no
+longer read; remove that obsolete environment setting. See the
+[website integration guide](website-integration.md) for the API and examples.
+
+After this update, verify `/api/config` reports `features.openDappConnections:true`
+and `features.dappReviewVersion:1`, then pair again. Old sessions expire on restart.
+Sponsorship defaults to 5,000 mana/day shared, 500/account/day and 1,000/site/day.
+Override these positive whole-mana ceilings with `DAPP_SPONSOR_MANA_PER_DAY`,
+`DAPP_SPONSOR_MANA_PER_ACCOUNT_DAY`, and `DAPP_SPONSOR_MANA_PER_SITE_DAY`.
+Keep `DATA_DIR/dapp-sponsorship.json` on persistent storage: it charges the signed
+maximum before submission, including failed or uncertain submissions. Deleting
+it resets the budget. Only one wallet backend process may own this data directory.
+Unfamiliar/custom contract calls use the user's own mana and receive no sponsor
+signature. Eligible native actions also fall back to the user's mana when the
+budget or capacity is unavailable; the user reviews the chosen payer before signing.
+Sponsorship requires fresh RPC verification of the account's bytecode hash,
+authorization flags, standard modules and signed nonce. Modified accounts or
+unavailable metadata reads do not qualify; standard pairing still works.
 
 ## Existing accounts
 

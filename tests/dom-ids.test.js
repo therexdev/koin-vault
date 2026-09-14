@@ -31,6 +31,8 @@ const IDS = {
     'btn-connect-app', 'btn-connect-app-security', 'dapp-status', 'dapp-request', 'dapp-title',
     'dapp-detail', 'dapp-name', 'dapp-origin', 'dapp-ops', 'dapp-network',
     'btn-dapp-reject', 'btn-dapp-approve', 'btn-dapp-disconnect',
+    'dapp-payer', 'dapp-mana', 'dapp-warnings', 'dapp-ack-row', 'dapp-ack',
+    'btn-dapp-block', 'dapp-blocked', 'dapp-blocked-list',
   ],
   'fund.js': [
     'btn-fund-enable', 'fund-eth-addr', 'btn-fund-land', 'btn-fund-retry', 'btn-fund-reset', 'fund-assets',

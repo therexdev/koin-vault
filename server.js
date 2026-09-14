@@ -36,6 +36,9 @@ const walletBackend = require('./tools/wallet-backend');
 const { createTokenService } = require('./tools/vault-token-sends');
 const dappLaunch = require('./tools/dapp-launch');
 const dappProducer = require('./tools/dapp-producer');
+const dappPolicy = require('./tools/dapp-policy');
+const dappReview = require('./tools/dapp-review');
+const { isDeepStrictEqual } = require('node:util');
 const { createPrices } = require('./tools/prices');
 const ethSwap = require('./tools/eth/eth-swap');
 const { makeProvider: makeEthProvider } = require('./tools/eth/eth-bridge');
@@ -92,11 +95,15 @@ const CFG = {
   maxAccountsPerDayIp: parseInt(process.env.MAX_ACCOUNTS_PER_DAY || '3', 10),
   maxAccountsPerDayGlobal: parseInt(process.env.MAX_ACCOUNTS_PER_DAY_GLOBAL || '20', 10),
   maxCredentialsPerAccount: parseInt(process.env.MAX_CREDENTIALS_PER_ACCOUNT || '32', 10),
-  dappOrigins: String(process.env.DAPP_ORIGINS || 'https://trade.koinoskit.site,https://app.tradekoinos.com,https://ouro.lifestyle,https://www.ouro.lifestyle,https://koinosai.com,https://usekoinos.com,https://www.usekoinos.com')
-    .split(',').map((x) => x.trim().replace(/\/+$/, '')).filter(Boolean),
   publicUrl: String(process.env.PUBLIC_URL || 'https://koinvault.app').trim().replace(/\/+$/, ''),
   demo: process.env.DEMO_MODE === '1',
 };
+
+const dappBudget = dappPolicy.createBudget({ file: path.join(CFG.dataDir, 'dapp-sponsorship.json'),
+  globalMana: process.env.DAPP_SPONSOR_MANA_PER_DAY,
+  accountMana: process.env.DAPP_SPONSOR_MANA_PER_ACCOUNT_DAY,
+  siteMana: process.env.DAPP_SPONSOR_MANA_PER_SITE_DAY });
+let dappReservedMana = 0n;
 
 let DEMO = CFG.demo;
 let BOOTING = true;
@@ -186,10 +193,25 @@ function dappSession(body) {
   if (!session) throw httpError(404, 'connection not found or expired');
   return session;
 }
+function dappWalletUrl(req) {
+  // Optional legacy proxy deployments may forward the other known wallet
+  // origin, but only through our authenticated proxy. Third-party Origins
+  // never become wallet origins merely by passing through the proxy.
+  if (walletBackend.trustedProxyIp(req, CFG.sponsorWif)) {
+    try { return walletBackend.approvalIdentity(req, CFG).origin; } catch (_) {}
+  }
+  return CFG.publicUrl;
+}
+function dappSessionOrigin(session, req) {
+  if (req.headers.origin !== session.origin && req.headers.origin !== new URL(dappWalletUrl(req)).origin) {
+    throw httpError(403, 'connection origin does not match');
+  }
+}
 
-api.dappCreate = async (body, _ip, _surface, req) => {
-  const origin = String(req.headers.origin || '').replace(/\/+$/, '');
-  if (!CFG.dappOrigins.includes(origin)) throw httpError(403, 'this app origin is not allowed');
+api.dappCreate = async (body, ip, _surface, req) => {
+  const origin = dappPolicy.websiteOrigin(req.headers.origin);
+  if (!origin) throw httpError(403, 'Connect from an HTTPS website');
+  if (rateLimited('dapp:create:ip:' + ip, 12, 60000) || rateLimited('dapp:create:global', 240, 60000)) throw httpError(429, 'Too many connection requests; try again shortly');
   const made = dappRelay.create({ origin, name: body.name, icon: body.icon });
   const forwardedProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
   const proto = forwardedProto || (req.socket.encrypted ? 'https' : 'http');
@@ -200,13 +222,15 @@ api.dappCreate = async (body, _ip, _surface, req) => {
   };
 };
 
-api.dappStatus = async (query) => {
+api.dappStatus = async (query, _surface, req) => {
   const session = dappRelay.get(query.get('sessionId'), query.get('secret'));
   if (!session) throw httpError(404, 'connection not found or expired');
+  dappSessionOrigin(session, req);
   return { ok: true, ...dappRelay.publicSession(session) };
 };
 
 api.dappChallenge = async (body, _ip, _surface, req) => {
+  dappPolicy.access('challenge', req.headers.origin, dappWalletUrl(req));
   const session = dappSession(body);
   if (DEMO) throw httpError(503, 'App connections require the live wallet');
   if (session.address) throw httpError(409, 'This connection is already approved; create a new QR');
@@ -214,7 +238,8 @@ api.dappChallenge = async (body, _ip, _surface, req) => {
   return { ok: true, challenge: dappAuth.issue(session.id, String(body.address || ''), origin, rpId) };
 };
 
-api.dappConnect = async (body) => {
+api.dappConnect = async (body, _ip, _surface, req) => {
+  dappPolicy.access('connect', req.headers.origin, dappWalletUrl(req));
   const session = dappSession(body);
   const address = String(body.address || '');
   const credentialId = String(body.credentialId || '');
@@ -229,31 +254,47 @@ api.dappConnect = async (body) => {
 
 api.dappRequest = async (body, ip, _surface, req) => {
   const session = dappSession(body);
-  if (String(req.headers.origin || '').replace(/\/+$/, '') !== session.origin) throw httpError(403, 'connection origin does not match');
+  if (req.headers.origin !== session.origin) throw httpError(403, 'connection origin does not match');
+  if (!session.address) throw httpError(409, 'Connect your wallet before requesting a transaction');
   if (rateLimited('dapp:req:' + session.address, 30, 60000) || rateLimited('dapp:ip:' + ip, 60, 60000)) {
     throw httpError(429, 'too many signing requests');
   }
   let operations;
   try { operations = dappRelay.validateOperations(body.operations); }
   catch (e) { throw httpError(400, e.message); }
-  let summary = body.summary;
-  if (session.origin === dappProducer.ORIGIN) {
-    if (DEMO) throw httpError(503, 'KAI producer signing requires the live wallet');
-    try { summary = await dappProducer.reviewProducer(operations, session.address, CFG.network); }
-    catch (e) { throw httpError(400, e.message); }
-  }
-  let tx;
-  if (DEMO) tx = { id: demoTxid() };
-  else {
+  if (body.mana !== undefined && !['auto', 'wallet'].includes(body.mana)) throw httpError(400, 'mana must be auto or wallet');
+  const endPrepare = dappRelay.beginPrepare(session);
+  try {
+    if (DEMO) throw httpError(503, 'App transactions require the live wallet');
     try { await veive.ensureReady(session.address); }
     catch (e) { throw httpError(409, e.message); }
-    const sponsorRc = BigInt(await chain.provider().getAccountRc(chain.sponsorAddress()));
-    const requiredRc = BigInt(chain.K.rcLimitDapp);
-    if (sponsorRc < requiredRc) throw httpError(503, 'The sponsor needs 100 available mana to approve this trade. Its mana is recharging; your wallet balance is not used for this sponsored transaction.');
-    tx = await chain.prepareUserTx(session.address, operations, { rcLimit: chain.K.rcLimitDapp });
-  }
-  const request = dappRelay.addRequest(session, { operations, summary, transaction: tx });
-  return { ok: true, requestId: request.id, expiresAt: request.expires };
+    let review;
+    try {
+      if (session.origin === dappProducer.ORIGIN) await dappProducer.reviewProducer(operations, session.address, CFG.network);
+      review = await dappReview.review(operations, session.address, CFG.network, chain);
+    } catch (e) { throw httpError(400, e.message); }
+    const singleNative = operations.length === 1 && [chain.net().koinContract, chain.net().vhpContract].includes(operations[0].call_contract.contract_id);
+    const ceiling = review.sponsorEligible && singleNative ? chain.K.rcLimitSmart : chain.K.rcLimitDapp;
+    const maxMana = dappReview.amount(ceiling, 8);
+    let sponsored = review.sponsorEligible && body.mana !== 'wallet';
+    if (sponsored) {
+      try {
+        dappBudget.check(session.address, session.origin, ceiling);
+        await dappPolicy.assertSponsorAccount(chain, session.address);
+        const available = BigInt(await chain.provider().getAccountRc(chain.sponsorAddress()));
+        sponsored = available >= BigInt(ceiling) + dappReservedMana + BigInt(Math.ceil(CFG.minCreateMana * 1e8));
+      } catch (_) { sponsored = false; }
+    }
+    if (!sponsored && BigInt(await chain.provider().getAccountRc(session.address)) < BigInt(ceiling)) {
+      throw httpError(409, `This transaction uses your wallet\u2019s mana and needs ${maxMana} available mana for its maximum limit. No KOIN fee is charged. Wait for mana to regenerate or hold enough KOIN in this wallet.`);
+    }
+    const tx = sponsored ? await chain.prepareUserTx(session.address, operations, { rcLimit: ceiling })
+      : await chain.prepareSelfPaidTx(session.address, operations, { rcLimit: ceiling });
+    const funding = { payer: sponsored ? 'sponsor' : 'wallet', address: tx.header.payer, maxMana, rcLimit: ceiling };
+    const summary = { title: review.title, detail: review.actions.map(a => a.detail).join('\n\n'), network: CFG.network };
+    const request = dappRelay.addRequest(session, { operations, summary, review, funding, transaction: tx });
+    return { ok: true, requestId: request.id, expiresAt: request.expires, funding };
+  } finally { endPrepare(); }
 };
 
 api.dappLaunch = async (body, ip, _surface, req) => {
@@ -261,9 +302,17 @@ api.dappLaunch = async (body, ip, _surface, req) => {
   if (DEMO) throw httpError(503, 'Launch approvals require the live wallet');
   if (String(req.headers.origin || '').replace(/\/+$/, '') !== session.origin) throw httpError(403, 'connection origin does not match');
   if (rateLimited('dapp:launch:' + session.address, 10, 60000)) throw httpError(429, 'Too many launch requests');
-  const validated = await dappLaunch.validateLaunch(session, body.transaction, chain);
-  const request = dappRelay.addRequest(session, validated);
-  return { ok: true, requestId: request.id, expiresAt: request.expires };
+  const endPrepare = dappRelay.beginPrepare(session);
+  try {
+    const validated = await dappLaunch.validateLaunch(session, body.transaction, chain);
+    validated.review = { version: 1, title: validated.summary.title, network: CFG.network, actions: [{ title: validated.summary.title,
+      contract: validated.operations[1].upload_contract.contract_id, detail: validated.summary.detail }],
+      warnings: [], requiresAcknowledgement: false, sponsorEligible: false };
+    validated.funding = { payer: 'app', address: validated.transaction.header.payer,
+      maxMana: dappReview.amount(validated.transaction.header.rc_limit, 8), rcLimit: validated.transaction.header.rc_limit };
+    const request = dappRelay.addRequest(session, validated);
+    return { ok: true, requestId: request.id, expiresAt: request.expires };
+  } finally { endPrepare(); }
 };
 
 api.dappPending = async (query) => {
@@ -273,17 +322,26 @@ api.dappPending = async (query) => {
 };
 
 api.dappApprove = async (body, _ip, _surface, req) => {
+  dappPolicy.access('approve', req.headers.origin, dappWalletUrl(req));
   const session = dappSession(body);
   const request = dappRelay.request(session, body.requestId);
   if (!request || request.status !== 'pending') throw httpError(404, 'signing request not found or already handled');
-  if (JSON.stringify(body.transaction?.header) !== JSON.stringify(request.transaction.header) || JSON.stringify(body.transaction?.operations) !== JSON.stringify(request.transaction.operations)) throw httpError(400, 'Transaction changed after preparation');
+  if (!request.review || !request.funding) throw httpError(409, 'Recreate this request to review it with the updated wallet');
+  if (request.review.requiresAcknowledgement && body.acknowledged !== true) throw httpError(400, 'Review and acknowledge the transaction warnings first');
+  if (body.transaction?.id !== request.transaction.id || body.transaction?.signatures?.length !== 1
+      || !isDeepStrictEqual(body.transaction?.header, request.transaction.header)
+      || !isDeepStrictEqual(body.transaction?.operations, request.transaction.operations)) throw httpError(400, 'Transaction changed after preparation');
+  const identity = walletBackend.approvalIdentity(req, CFG);
+  await dappAuth.verifyProof(session.address, request.transaction.id, body.transaction.signatures[0], chain, identity);
+  dappRelay.assertLive(session);
+  if (request.status !== 'pending' || request.expires <= Date.now()) throw httpError(409, 'Request already handled or expired');
+  const endSubmit = dappRelay.beginSubmit(session);
   dappRelay.settle(request, 'submitting');
+  let reservation = 0n;
   try {
     if (request.mode === 'launch') {
       const tx = body.transaction;
       if (tx.id !== request.transaction.id || tx.signatures?.length !== 1) throw httpError(400, 'Invalid launch approval');
-      const identity = walletBackend.approvalIdentity(req, CFG);
-      await dappAuth.verifyProof(session.address, tx.id, tx.signatures[0], chain, identity);
       const signedTransaction = { id: tx.id, header: request.transaction.header, operations: request.transaction.operations, signatures: tx.signatures };
       dappRelay.settle(request, 'signed', { signedTransaction, txid: tx.id });
       return { ok: true, txid: tx.id, signedOnly: true };
@@ -292,8 +350,19 @@ api.dappApprove = async (body, _ip, _surface, req) => {
     if (DEMO) {
       await demoCheckSmartSignature(body.transaction, { txId: request.transaction.id, address: session.address });
       txid = request.transaction.id;
-    } else {
+    } else if (request.funding.payer === 'sponsor') {
+      if (!request.review.sponsorEligible) throw httpError(403, 'This contract action cannot use the sponsor');
+      await dappPolicy.assertSponsorAccount(chain, session.address, request.transaction);
+      const available = BigInt(await chain.provider().getAccountRc(chain.sponsorAddress()));
+      const ceiling = BigInt(request.funding.rcLimit);
+      if (available < ceiling + dappReservedMana + BigInt(Math.ceil(CFG.minCreateMana * 1e8))) throw httpError(503, 'Sponsorship capacity is unavailable. Create a new request to use your wallet\u2019s mana.');
+      dappRelay.assertLive(session); // a disconnect during the capacity read cancels this submission
+      dappBudget.spend(session.address, session.origin, ceiling);
+      reservation = ceiling; dappReservedMana += reservation;
       txid = await chain.submitSmartCosigned(body.transaction, request.transaction.id, session.address, veive.credentialsFor(session.address));
+    } else {
+      dappRelay.assertLive(session);
+      txid = await chain.submitSelfPaid(body.transaction, request.transaction.id, session.address, veive.credentialsFor(session.address));
     }
     dappRelay.settle(request, 'approved', { txid });
     return { ok: true, txid, explorer: explorerTx(txid) };
@@ -301,12 +370,13 @@ api.dappApprove = async (body, _ip, _surface, req) => {
     if (/insufficient rc/i.test(String(e.message || e))) {
       e = httpError(409, 'This trade exceeded its signed mana limit. Your KOIN balance is not the cause. Start a new order to use the current trade limit; if it fails again, the contract calls need a larger budget.');
     }
-    dappRelay.settle(request, 'failed', { error: String(e.message || e).slice(0, 240) });
+    dappRelay.settle(request, 'failed', { error: String(e.message || e).slice(0, 240), txid: e.txId || request.transaction.id });
     throw e;
-  }
+  } finally { dappReservedMana -= reservation; endSubmit(); }
 };
 
-api.dappReject = async (body) => {
+api.dappReject = async (body, _ip, _surface, req) => {
+  dappPolicy.access('reject', req.headers.origin, dappWalletUrl(req));
   const session = dappSession(body);
   const request = dappRelay.request(session, body.requestId);
   if (!request || request.status !== 'pending') throw httpError(404, 'signing request not found');
@@ -314,15 +384,19 @@ api.dappReject = async (body) => {
   return { ok: true };
 };
 
-api.dappRequestStatus = async (query) => {
+api.dappRequestStatus = async (query, _surface, req) => {
   const session = dappRelay.get(query.get('sessionId'), query.get('secret'));
   if (!session) throw httpError(404, 'connection not found or expired');
+  dappSessionOrigin(session, req);
   const request = dappRelay.request(session, query.get('requestId'));
   if (!request) throw httpError(404, 'signing request not found');
   return { ok: true, status: request.status, txid: request.txid, error: request.error, signedTransaction: request.signedTransaction };
 };
 
-api.dappDisconnect = async (body) => { dappRelay.disconnect(dappSession(body)); return { ok: true }; };
+api.dappDisconnect = async (body, _ip, _surface, req) => {
+  const session = dappSession(body); dappSessionOrigin(session, req);
+  dappRelay.disconnect(session); return { ok: true };
+};
 
 /** What is actually running here.
 
@@ -1068,6 +1142,17 @@ const server = http.createServer(async (req, res) => {
     const surface = appSurface.requestSurface(pathname, req.headers);
     const apiPath = surface.apiPath;
     if (apiPath.startsWith('/api/')) {
+      if (apiPath.startsWith('/api/dapp/')) {
+        const route = apiPath.slice('/api/dapp/'.length);
+        const origin = dappPolicy.requestOrigin(req, dappWalletUrl(req));
+        if (origin) req.headers.origin = origin; // preserve an inferred wallet read through the authenticated proxy
+        const access = dappPolicy.access(route, req.headers.origin, dappWalletUrl(req));
+        res.setHeader('Access-Control-Allow-Origin', access.origin);
+        res.setHeader('Vary', 'Origin');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+        res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+        if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
+      }
       if (forwardWallet) {
         if (!['/api/token/prepare', '/api/token/submit'].includes(apiPath)) return await forwardWallet(req, res);
         res.setHeader('Content-Type', 'application/json');
@@ -1084,14 +1169,6 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(503, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Retry-After': '3' });
         return res.end(JSON.stringify({ error: BOOT_ERROR ? 'Wallet startup failed. Check the application runtime log.' : 'Wallet is starting. Please reload in a few seconds.' }));
       }
-      const origin = String(req.headers.origin || '').replace(/\/+$/, '');
-      if (apiPath.startsWith('/api/dapp/') && CFG.dappOrigins.includes(origin)) {
-        res.setHeader('Access-Control-Allow-Origin', origin);
-        res.setHeader('Vary', 'Origin');
-        res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-        res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-      }
-      if (req.method === 'OPTIONS' && apiPath.startsWith('/api/dapp/')) { res.writeHead(204); return res.end(); }
       res.setHeader('Content-Type', 'application/json');
       res.setHeader('Cache-Control', 'no-store');
       if (surface.android && appSurface.isFundingPath(apiPath)) throw httpError(403, 'Buying and conversions are not available in the Android app');
@@ -1099,9 +1176,9 @@ const server = http.createServer(async (req, res) => {
       let out;
       if (req.method === 'GET' && GET_ROUTES[apiPath]) {
         if (surface.android && apiPath === '/api/health') url.searchParams.delete('rail');
-        out = await GET_ROUTES[apiPath](url.searchParams, surface);
+        out = await GET_ROUTES[apiPath](url.searchParams, surface, req);
         if (apiPath === '/api/config') {
-          out = { ...out, client: surface.android ? 'android' : 'web', features: { kaiProducer: !DEMO && CFG.network === "mainnet" && CFG.dappOrigins.includes(dappProducer.ORIGIN), buy: !surface.android } };
+          out = { ...out, client: surface.android ? 'android' : 'web', features: { openDappConnections: true, dappReviewVersion: 1, kaiProducer: !DEMO && CFG.network === "mainnet", buy: !surface.android } };
           if (surface.android) { delete out.float; delete out.solRail; }
         }
       } else if (req.method === 'POST' && POST_ROUTES[apiPath]) {
