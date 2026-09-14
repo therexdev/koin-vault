@@ -204,13 +204,14 @@ h3 { font: 700 18px/24px var(--font); color: var(--bright); margin: 0; }
 
 /* ───────────────────────── fields ───────────────────────── */
 label { display: block; font: 600 13px/18px var(--font); color: var(--dim); margin-bottom: 6px; }
-input, textarea {
+input, textarea, select {
   display: block; width: 100%; padding: 12px 14px;
   font: 500 16px/22px var(--font); color: var(--bright);
   background: var(--inset); border: 1px solid var(--line-strong); border-radius: var(--r-m);
   -webkit-appearance: none; appearance: none;
 }
-input:focus, textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--tint-accent); }
+input:focus, textarea:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--tint-accent); }
+select { -webkit-appearance: auto; appearance: auto; }
 input::placeholder, textarea::placeholder { color: var(--line-strong); }
 .field { margin: 14px 0 0; }
 .field-wrap { position: relative; }

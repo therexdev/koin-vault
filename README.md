@@ -113,6 +113,11 @@ ensure failed sign-in never creates a new account.
 
 ## Sending
 
+Choose **KOIN** or **VHP** in the send card, or open VHP in the asset list and
+tap **Send**. The balance, Send all, dollar estimate and confirmation follow
+the selected asset. Both use the existing passkey or recovery-key signing
+flow, with sponsored mana. Amounts stay exact to all eight decimal places.
+
 The send card takes an address by hand, or by camera. **Scan QR code** opens
 the rear camera and fills the address in for you — reading a bare address, a
 `koinos:<address>?amount=…` payment URI (the amount comes across too), or an

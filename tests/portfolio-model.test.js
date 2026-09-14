@@ -91,6 +91,7 @@ const plain = (o) => JSON.parse(JSON.stringify(o));
     assert.strictEqual(m.koin.usdText, '$1.27');
     assert.strictEqual(m.koin.priceText, '$0.0102');
     assert.strictEqual(m.vhp.amountText, '40');
+    assert.strictEqual(m.vhpUsd, 0.0098, 'The VHP send estimate has its own unit price');
     assert.strictEqual(m.vhp.usdText, '$0.39');
     assert.strictEqual(m.others.length, 1);
     assert.strictEqual(m.others[0].amountText, '25');
