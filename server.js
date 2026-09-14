@@ -949,11 +949,15 @@ api.fundPrepareStep = async (body) => {
     }
     tx = await chain.withRpcRetry(() => chain.prepareSelfPaidTx(account, tap.ops, { rcLimit: tap.rcLimit }));
   } else {
+    if (sponsorMana < Number(tap.rcLimit) / 1e8) {
+      throw httpError(503, 'the sponsor wallet is recharging the mana needed for this step — try again in a few minutes');
+    }
     /* Public RPCs occasionally answer with an HTML error page; building is
        read-only and idempotent, so ride it out rather than failing the tap. */
     tx = await chain.withRpcRetry(() => chain.prepareUserTx(account, tap.ops, { rcLimit: tap.rcLimit }));
   }
-  const ref = rememberPrepared(tx.id, account, { smart: true, selfPaid, fundingTap: { account, step: tap.step } });
+  const ref = rememberPrepared(tx.id, account, { smart: true, selfPaid, transaction: structuredClone(tx),
+    fundingTap: { account, step: tap.step } });
   return { ok: true, ref, tx, step: tap.step, selfPaid, toppedUp: topUp && topUp.toppedUp || undefined };
 };
 
