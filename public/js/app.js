@@ -17,6 +17,7 @@
   let PENDING_BACKUP = null; // a captured-but-unregistered backup passkey
   let BALANCE_SATS = '';   // the chain's own integer balance, for "Send all"
   let VHP_BALANCE_SATS = '';
+  let TOKEN_BALANCES = {}; // fresh integers by contract; cleared on failed reads
   let SENDING = false;
   let DAPP = null;         // {sessionId, secret}; bearer secret stays on this device
   let DAPP_POLL = null;
@@ -454,6 +455,8 @@
       const m = await portfolio;
       if (gen === PAINT_GEN) {
         VHP_BALANCE_SATS = !m.error && m.vhp && !m.vhp.unavailable && m.vhp.sats != null ? String(m.vhp.sats) : '';
+        TOKEN_BALANCES = Object.fromEntries((!m.error && m.others || [])
+          .filter(row => !row.unavailable && row.sats != null).map(row => [row.id, String(row.sats)]));
         UI.paintPortfolio(m);
       }
     } finally {
@@ -663,28 +666,50 @@
     if (SENDING) return;
     const btn = $('#btn-send'), st = $('#send-status');
     const asset = UI.sendAsset(), symbol = UI.sendSymbol();
+    const decimals = UI.sendDecimals();
+    const custom = asset !== 'koin' && asset !== 'vhp';
     const to = $('#send-to').value.trim();
     const amount = $('#send-amount').value.trim();
-    const say = (msg, cls) => { st.hidden = false; st.className = 'status' + (cls ? ' ' + cls : ''); st.innerHTML = msg; };
+    // Token symbols and contract errors are untrusted text, never markup.
+    const say = (msg, cls) => { st.hidden = false; st.className = 'status' + (cls ? ' ' + cls : ''); st.textContent = msg; };
     if (!UI.canSendAsset(asset)) { say('Refresh the wallet to check whether this asset can be sent.', 'err'); return; }
     if (!to) { say('Paste a destination address', 'err'); return; }
-    if (!/^\d+(\.\d{1,8})?$/.test(amount) || Number(amount) <= 0) { say('Amount must be a positive number (max 8 decimals)', 'err'); return; }
+    let units;
+    try { units = TokenAmounts.toUnits(amount, decimals); }
+    catch (e) { say(e.message, 'err'); return; }
     SENDING = true;
     btn.disabled = true;
     UI.setSendBusy(true);
     try {
       say('Preparing the exact transaction — the sharer pays the mana…');
-      const prep = await api('/api/prepare', { address: ADDRESS, to, amount, asset });
+      if (custom) {
+        const current = await api('/api/config');
+        if (current.demo !== false || current.sendCustomTokens !== true || current.network !== cfg.network) {
+          throw new Error('Added-token sending is unavailable or the network changed. Refresh the wallet and try again.');
+        }
+      }
+      const prep = await api(custom ? '/api/token/prepare' : '/api/prepare', { address: ADDRESS, to, amount, asset });
       // During a rolling deploy an older server could ignore `asset` and
-      // prepare KOIN. Never sign that transaction when VHP was requested.
-      if ((prep.asset || 'koin') !== asset) throw new Error('VHP sending is being updated. Refresh and try again shortly.');
+      // prepare KOIN. Never sign a different token or changed decimals.
+      if ((prep.asset || 'koin') !== asset) throw new Error('The prepared asset does not match your selection. Refresh and try again.');
+      if (custom) {
+        const info = prep.transfer, ops = prep.tx && prep.tx.operations;
+        const call = Array.isArray(ops) && ops.length === 1 && ops[0].call_contract;
+        if (!info || info.contract !== asset || info.decimals !== decimals || info.symbol !== symbol || info.units !== units
+          || !call || call.contract_id !== asset || call.entry_point !== 0x27f576ca || prep.tx.header?.payee !== ADDRESS) {
+          throw new Error('The prepared token transfer does not match what you reviewed. Refresh the token details and try again.');
+        }
+      }
       say(RECOVERY ? 'Signing with your recovery key…' : 'Confirm with your passkey — it signs the transaction id itself…');
       const blob = await signPrepared(prep.tx);
       say('Broadcasting — the chain verifies the signature on-chain…');
-      const r = await api('/api/submit', { ref: prep.ref, transaction: { ...prep.tx, signatures: [blob] } });
-      say(`Sent ${symbol} ✓ ` + (r.explorer
-        ? `— <a href="${r.explorer}" target="_blank" rel="noopener">view it on-chain ↗</a>`
-        : (r.demo ? `(demo transaction ${r.txid.slice(0, 14)}…)` : '')), 'ok');
+      const r = await api(custom ? '/api/token/submit' : '/api/submit', { ref: prep.ref, transaction: { ...prep.tx, signatures: [blob] } });
+      say(`Sent ${symbol} ✓` + (r.demo ? ` (demo transaction ${r.txid.slice(0, 14)}…)` : ''), 'ok');
+      if (typeof r.explorer === 'string' && r.explorer.startsWith('https://')) {
+        const link = document.createElement('a');
+        link.href = r.explorer; link.target = '_blank'; link.rel = 'noopener'; link.textContent = ' — view it on-chain ↗';
+        st.appendChild(link);
+      }
       $('#send-to').value = ''; $('#send-amount').value = '';
       paint();
     } catch (e) {
@@ -721,19 +746,19 @@
     }
   });
 
-  /** The whole balance, to the satoshi.
+  /** The whole balance, to the token's smallest unit.
 
       Formatted from the chain's own integer rather than the displayed
       number: a float rounds, and "all" that leaves dust behind — or asks for
       more than exists — is not all. Mana is sponsored here, so nothing has
       to be held back for a fee. */
+  function sendAllBalance() {
+    const asset = UI.sendAsset();
+    return asset === 'vhp' ? VHP_BALANCE_SATS : asset === 'koin' ? BALANCE_SATS : TOKEN_BALANCES[asset] || '';
+  }
   function sendAllAmount() {
-    const balance = UI.sendAsset() === 'vhp' ? VHP_BALANCE_SATS : BALANCE_SATS;
-    const sats = BigInt(/^\d+$/.test(balance) ? balance : '0');
-    if (sats <= 0n) return null;
-    const whole = sats / 100000000n;
-    const frac = String(sats % 100000000n).padStart(8, '0').replace(/0+$/, '');
-    return frac ? `${whole}.${frac}` : String(whole);
+    const amount = TokenAmounts.fromUnits(sendAllBalance(), UI.sendDecimals());
+    return amount === '0' ? null : amount;
   }
 
   $('#btn-send-all').addEventListener('click', () => {
@@ -741,7 +766,7 @@
     const all = sendAllAmount();
     if (!all) {
       st.hidden = false; st.className = 'status err';
-      const balance = UI.sendAsset() === 'vhp' ? VHP_BALANCE_SATS : BALANCE_SATS;
+      const balance = sendAllBalance();
       st.textContent = balance === '' ? 'Balance is unavailable — refresh and try again' : `There is no ${UI.sendSymbol()} in this account yet`;
       return;
     }
@@ -756,7 +781,7 @@
     if (DAPP) void api('/api/dapp/disconnect', DAPP).catch(() => {});
     saveDapp(null); paintDappRequest(null, null);
     PAINT_GEN++; PAINTING = false; PAINT_AGAIN = false;   // in-flight reads for this account are void
-    BALANCE_SATS = ''; VHP_BALANCE_SATS = '';
+    BALANCE_SATS = ''; VHP_BALANCE_SATS = ''; TOKEN_BALANCES = {};
     clearPendingKit();
     ADDRESS = null; ACTIVE = false; RECOVERY = null; CREDENTIALS = []; PENDING_BACKUP = null;
     /* The credential id stays remembered: it's public on-chain anyway, the

@@ -379,7 +379,7 @@
         <button class="ghost" id="btn-tok-receive" type="button">Receive</button>
         <button class="cta" id="btn-tok-send" type="button">Send</button>
       </div>
-      <p class="hint center" id="tok-send-note" hidden>This wallet sends KOIN and VHP. Sending other tokens is coming.</p>
+      <p class="hint center" id="tok-send-note" hidden>Token details are unavailable. Refresh before sending this token.</p>
       <dl class="details">
         <div id="tok-contract-row"><dt>Contract</dt><dd><button class="linkish mono" id="tok-contract" type="button" title="Copy contract address"></button></dd></div>
         <div><dt>Decimals</dt><dd id="tok-decimals"></dd></div>
@@ -400,6 +400,7 @@
           <option value="koin" id="send-option-koin">KOIN</option>
           <option value="vhp" id="send-option-vhp" disabled>VHP</option>
         </select>
+        <p class="hint mono token-contract" id="send-token-contract" hidden></p>
       </div>
       <div class="field">
         <label for="send-to">To</label>
@@ -425,6 +426,7 @@
       </div>
       <div class="sign-summary" id="sign-summary" hidden>
         <dl>
+          <div id="ss-contract-row" hidden><dt>Token contract</dt><dd class="mono token-contract" id="ss-contract"></dd></div>
           <div><dt>To</dt><dd class="mono" id="ss-to"></dd></div>
           <div><dt>Amount</dt><dd id="ss-amount"></dd></div>
           <div><dt>Fee</dt><dd>Free</dd></div>
@@ -551,6 +553,7 @@
 <script src="/js/qr.js"></script>
 <script src="/js/receive.js"></script>
 <script src="/js/portfolio.js"></script>
+<script src="/js/token-amounts.js"></script>
 <script src="/js/ui.js"></script>
 <script src="/js/app.js"></script>
 </body>

@@ -51,7 +51,7 @@ function trustedProxyIp(req, secret) {
   } catch (_) { return null; }
 }
 
-function createProxy({ backendUrl, publicUrl, rpId, secret, clientIp, timeoutMs = 20000 }) {
+function createProxy({ backendUrl, publicUrl, rpId, secret, clientIp, configureResponse, timeoutMs = 20000 }) {
   const target = new URL(backendUrl);
   const local = ['127.0.0.1', 'localhost', '[::1]'].includes(target.hostname);
   if ((target.protocol !== 'https:' && !(target.protocol === 'http:' && local))
@@ -117,8 +117,9 @@ function createProxy({ backendUrl, publicUrl, rpId, secret, clientIp, timeoutMs 
         const apiPath = url.pathname.replace(/^\/android(?=\/api\/)/, '');
         if (status === 200 && ['/api/config', '/api/dapp/create'].includes(apiPath)) {
           try {
-            const data = JSON.parse(payload.toString());
+            let data = JSON.parse(payload.toString());
             if (apiPath === '/api/config') data.rpId = rpId || frontend.hostname;
+            if (apiPath === '/api/config' && configureResponse) data = configureResponse(data);
             if (apiPath === '/api/dapp/create' && data.uri) {
               const uri = new URL(data.uri);
               if (uri.pathname !== '/' || !uri.searchParams.get('connect') || !uri.searchParams.get('secret')) throw new Error('Unexpected wallet link');
