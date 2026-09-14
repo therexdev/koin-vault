@@ -29,7 +29,7 @@ async function reviewProducer(operations, address, network) {
     if (!kind) throw new Error("Unknown producer contract");
     const contract = new Contract({ id: c.contract_id, abi: abi(kind === "pob" ? pobAbi : tokenAbi) });
     const d = await contract.decodeOperation(op);
-    const allowed = kind === "pob" ? ["register_public_key", "burn"] : kind === "koin" ? ["transfer", "approve"] : ["transfer"];
+    const allowed = kind === "pob" ? ["register_public_key", "burn"] : kind === "koin" ? ["transfer", "approve"] : ["transfer", "approve"];
     if (!allowed.includes(d.name)) throw new Error("Unsupported producer operation");
     const encoded = await contract.functions[d.name](d.args, { onlyOperation: true });
     if (!isDeepStrictEqual(canonical(encoded.operation), canonical(op))) throw new Error("Noncanonical producer operation");
@@ -43,6 +43,13 @@ async function reviewProducer(operations, address, network) {
     if (key.length !== 33 || ![2, 3].includes(key[0])) throw new Error("Invalid hot production public key");
     title = "Register KAI node hot key";
     detail = `Producer: ${address}. Hot public key: ${a.public_key}. This key will produce blocks for your wallet. No tokens move.`;
+  } else if (last.kind === "vhp" && last.name === "approve" && decoded.length === 1) {
+    if (a.owner !== address || a.spender !== CONTRACTS.pob) throw new Error("VHP production allowance must use the connected wallet and official PoB contract");
+    const raw = String(a.value || "0");
+    if (raw === "18446744073709551615") throw new Error("Choose a limited VHP production allowance");
+    const value = raw === "0" ? "0" : amount(raw);
+    title = raw === "0" ? "Revoke VHP production allowance" : "Allow VHP for block production";
+    detail = `Set VHP spending allowance for official PoB ${CONTRACTS.pob} to ${value} VHP. Replaces remaining allowance; production consumes it for KOIN rewards. No tokens move now. Set 0 to revoke. Hot key gains no transfer authority.`;
   } else if (last.name === "burn") {
     if (a.burn_address !== address || a.vhp_address !== address) throw new Error("Burn and VHP destination must be the connected wallet");
     const value = amount(a.token_amount);

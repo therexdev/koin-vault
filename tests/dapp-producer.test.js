@@ -34,5 +34,18 @@ const op = async (c, name, args) => (await c.functions[name](args, { onlyOperati
   await assert.rejects(reviewProducer([approve], address, 'mainnet'), /combination/);
   const extra = structuredClone(register); extra.call_contract.unexpected = 'field';
   await assert.rejects(reviewProducer([extra], address, 'mainnet'), /Noncanonical/);
+  for (const value of ['100000000', '0']) {
+    const allowance = await op(vhp, 'approve', { owner: address, spender: CONTRACTS.pob, value });
+    const reviewed = await reviewProducer([allowance], address, 'mainnet');
+    assert.match(reviewed.title, value === '0' ? /Revoke/ : /Allow VHP/);
+    assert.ok(reviewed.detail.includes(CONTRACTS.pob));
+    assert.match(reviewed.detail, /Hot key gains no transfer authority/);
+    await assert.rejects(reviewProducer([allowance], to, 'mainnet'), /connected wallet/);
+    await assert.rejects(reviewProducer([allowance, register], address, 'mainnet'), /combination/);
+  }
+  const wrongSpender = await op(vhp, 'approve', { owner: address, spender: to, value: '100000000' });
+  await assert.rejects(reviewProducer([wrongSpender], address, 'mainnet'), /official PoB/);
+  const unlimited = await op(vhp, 'approve', { owner: address, spender: CONTRACTS.pob, value: '18446744073709551615' });
+  await assert.rejects(reviewProducer([unlimited], address, 'mainnet'), /limited/);
   console.log('✓ KAI producer approvals decode exact amounts, accounts and hot keys and reject unrelated or excessive authority');
 })().catch(e => { console.error(e); process.exitCode = 1; });
