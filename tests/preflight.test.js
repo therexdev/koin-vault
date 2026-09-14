@@ -28,6 +28,16 @@ let HOOK = null;
 
 const { Serializer, Signer, utils } = require("koilib");
 const chain = require("../tools/chain");
+// Preserve the gateway reason; this is distinct from passkey validation.
+assert.strictEqual(chain.humanChainError(new Error(JSON.stringify({
+  error: 'Unable to translate request', data: 'parameters could not be parsed',
+}))), 'Unable to translate request: parameters could not be parsed');
+assert.strictEqual(chain.humanChainError(new Error(JSON.stringify({
+  error: { message: 'Unable to translate request', data: 'method not whitelisted' },
+}))), 'Unable to translate request: method not whitelisted');
+assert.strictEqual(chain.humanChainError(new Error('compute bandwidth limit exceeded')),
+  'compute bandwidth limit exceeded');
+
 const ABI = require("../contracts/vendor/mod-sign-webauthn/modsignwebauthn-abi.json");
 
 const M = ABI.methods.is_valid_signature;

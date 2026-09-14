@@ -164,8 +164,18 @@ function humanChainError(e) {
   for (let i = 0; i < 3; i++) {
     try {
       const j = JSON.parse(msg);
-      if (j && typeof j.error === 'string') { msg = j.error; continue; }
-      if (j && j.error && typeof j.error.message === 'string') { msg = j.error.message; continue; }
+      const rpcError = j && j.error;
+      const reason = typeof rpcError === 'string' ? rpcError : rpcError && rpcError.message;
+      if (typeof reason === 'string') {
+        // koilib puts the RPC's explanatory string in data. Keep it when
+        // the gateway rejects a request before it reaches chain execution.
+        const detail = typeof j.data === 'string' ? j.data
+          : rpcError && typeof rpcError.data === 'string' ? rpcError.data : '';
+        if (/unable to (?:translate|parse) request|invalid request/i.test(reason) && detail) {
+          return `${reason}: ${detail}`;
+        }
+        msg = reason; continue;
+      }
     } catch (_) {}
     break;
   }

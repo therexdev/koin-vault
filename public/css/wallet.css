@@ -627,7 +627,15 @@ details.card[open] > summary { margin-bottom: 6px; }
 .dapp-review { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; max-height: 55vh; overflow-y: auto; }
 .dapp-ack { display: flex; align-items: flex-start; gap: .65rem; margin: 1rem 0; line-height: 1.5; }
 .dapp-ack[hidden] { display: none; }
-.dapp-ack input { width: 1.2rem; height: 1.2rem; flex-shrink: 0; margin-top: .2rem; }
+.dapp-ack input[type="checkbox"] {
+  -webkit-appearance: checkbox; appearance: auto;
+  width: 1.4rem; height: 1.4rem; padding: 0;
+  flex-shrink: 0; margin: .1rem 0 0; accent-color: var(--accent);
+  cursor: pointer;
+}
+.dapp-ack input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 3px;
+}
 #dapp-origin, #dapp-payer { overflow-wrap: anywhere; }
 #dapp-blocked { margin-top: 1rem; }
 #dapp-blocked summary { cursor: pointer; }
