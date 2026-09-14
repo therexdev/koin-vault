@@ -23,6 +23,7 @@ const path = require('path');
 const { Signer, Provider, Contract, Transaction, Serializer, utils } = require('koilib');
 const { NETWORKS, rpcCandidates } = require('./rpc');
 const { installFailover } = require('./rpc-failover');
+const TokenAmounts = require('../public/js/token-amounts');
 
 function sanitizeAbi(abi) {
   const out = JSON.parse(JSON.stringify(abi));
@@ -134,20 +135,22 @@ async function tokenBalanceSats(contractId, owner) {
 async function vhpBalanceSats(addr) {
   return net().vhpContract ? tokenBalanceSats(net().vhpContract, addr) : '0';
 }
-/** name / symbol / decimals — cached forever per address: they are fixed
-    at deploy and re-asking costs three RPC calls a token per page view. */
+/** Cache display metadata per network/address. A send requests a fresh
+    read because an upgradeable contract may have changed its decimals. */
 const _meta = new Map();
-async function tokenMeta(contractId) {
-  if (_meta.has(contractId)) return _meta.get(contractId);
+async function tokenMeta(contractId, { fresh = false } = {}) {
+  const key = `${K.network}:${contractId}`;
+  if (!fresh && _meta.has(key)) return _meta.get(key);
   const f = tokenContractAt(contractId).functions;
   const [n, s, d] = await Promise.all([f.name({}), f.symbol({}), f.decimals({})]);
   const meta = {
     address: contractId,
     name: String(n.result?.value || ''),
     symbol: String(s.result?.value || ''),
-    decimals: Number(d.result?.value ?? 8),
+    decimals: d.result?.value == null ? NaN : Number(d.result.value),
   };
-  if (meta.symbol) _meta.set(contractId, meta);
+  if (!TokenAmounts.validDecimals(meta.decimals)) throw new Error('This token has unsupported or unavailable decimals');
+  if (meta.symbol) _meta.set(key, meta);
   return meta;
 }
 async function headInfo() {
@@ -228,6 +231,14 @@ async function opKoinTransfer(from, to, valueSats) {
 
 async function opVhpTransfer(from, to, valueSats) {
   const { operation } = await vhpContract().functions.transfer(
+    { from, to, value: String(valueSats) }, { onlyOperation: true });
+  return operation;
+}
+
+/** Use the wallet's fixed standard-token ABI, never a caller-supplied ABI
+    or entry point. Only the selected token contract receives this call. */
+async function opTokenTransfer(contractId, from, to, valueSats) {
+  const { operation } = await tokenContractAt(contractId).functions.transfer(
     { from, to, value: String(valueSats) }, { onlyOperation: true });
   return operation;
 }
@@ -849,7 +860,7 @@ module.exports = {
   humanChainError, waitMined, withRpcRetry,
   tokenContractAt, tokenBalanceSats, vhpContract, vhpBalanceSats, tokenMeta,
   net: () => net(),
-  opKoinTransfer, opVhpTransfer, prepareUserTx, submitCosigned, verifyAuthSignature,
+  opKoinTransfer, opVhpTransfer, opTokenTransfer, prepareUserTx, submitCosigned, verifyAuthSignature,
   /* Veive smart-account layer */
   veiveReady, newAccountKey, keyFromWif,
   accountModules, accountCredentials, credentialAddress, credentialRegisteredFor,

@@ -113,10 +113,28 @@ ensure failed sign-in never creates a new account.
 
 ## Sending
 
-Choose **KOIN** or **VHP** in the send card, or open VHP in the asset list and
+Choose **KOIN**, **VHP**, or an added token in the send card, or open a token in the asset list and
 tap **Send**. The balance, Send all, dollar estimate and confirmation follow
-the selected asset. Both use the existing passkey or recovery-key signing
-flow, with sponsored mana. Amounts stay exact to all eight decimal places.
+the selected asset. All use the existing passkey or recovery-key signing
+flow, with sponsored mana. KOIN and VHP use eight decimal places; added
+standard Koinos tokens use the decimals read from their own contract. The
+form shows the token contract so tokens sharing a symbol can be distinguished.
+Unpriced tokens have no dollar estimate. Unsupported contracts or unavailable
+metadata cannot be sent, and the server rechecks the balance before preparing.
+
+Deploy this change only to KOIN Vault. Added tokens use its own
+`/api/token/prepare` and `/api/token/submit` routes, including in proxy mode;
+the original wallet backend needs no update. Configure `SPONSOR_WIF`,
+`KOINOS_NETWORK`, `VERIFIER_ADDR`, `MOD_SIGN_WEBAUTHN_ADDR`, and
+`MOD_VALIDATION_SIGNATURE_ADDR` on the Vault host. The network and public
+module addresses must match the existing account backend. These routes do
+not open account files or start funding workers. The deployed sign module
+must verify the passkey before Vault co-signs with its sponsor.
+
+Until Vault has a live, matching configuration, `/api/config` keeps added
+token sending disabled. Its sponsor needs at least 20 available mana for the
+signed ceiling; only actual resource use is charged. A mismatched prepared
+token or changed decimal count is rejected before the passkey prompt.
 
 The send card takes an address by hand, or by camera. **Scan QR code** opens
 the rear camera and fills the address in for you — reading a bare address, a
@@ -731,13 +749,14 @@ its own hostname and its accounts live on-chain.
 ### Running both wallet domains
 
 `wallet.usekoinos.com` remains the authoritative wallet backend. The `koin-vault`
-repository serves `koinvault.app` and forwards its API requests to the original
-wallet by default. The new frontend does not open `DATA_DIR`, acquire its lock,
+repository serves `koinvault.app` and forwards account, native-token and funding
+API requests to the original wallet by default. Added-token transfers run in
+KOIN Vault itself. The Vault host does not open `DATA_DIR`, acquire its lock,
 or start funding workers. Both domains use the original backend's account records,
-prepared transactions, and funding state. No data copy or lock removal is needed.
+native-token prepared transactions, and funding state. Vault holds its own
+short-lived added-token preparations in memory. No data copy or lock removal is needed.
 
-Deploy the new frontend first so it releases the shared data lock, then deploy
-or restart the original backend. Keep the original runtime environment and
+Deploy updates to KOIN Vault only. Keep the original runtime environment and
 `DATA_DIR` unchanged. Each domain retains its own passkey relying-party ID.
 Original saved passkeys continue to sign in at `wallet.usekoinos.com`; this update
 does not change their on-chain authority or enable cross-domain passkey reuse.

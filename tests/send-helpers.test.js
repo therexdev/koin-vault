@@ -90,8 +90,12 @@ const ADDR = '1NsQBhtnesUNoTBFyzUXqCcpqvhaGvxGdt';
     const app = fs.readFileSync(path.join(__dirname, '..', 'public', 'js', 'app.js'), 'utf8');
     const shipped = /function sendAllAmount\(\) \{([\s\S]*?)\n  \}/.exec(app);
     assert.ok(shipped, 'sendAllAmount() must exist in app.js');
-    assert.match(shipped[1], /BigInt/, 'and must do its arithmetic in BigInt, never on a float');
-    assert.match(shipped[1], /100000000n/, 'against KOIN\'s 8 decimals');
+    const context = vm.createContext({ TokenAmounts: require('../public/js/token-amounts'),
+      UI: { sendDecimals: () => 8 }, sendAllBalance: () => '9007199254740993' });
+    vm.runInContext('function sendAllAmount() {' + shipped[1] + '\n}', context);
+    assert.strictEqual(context.sendAllAmount(), '90071992.54740993', 'shipped Send all remains exact beyond float precision');
+    context.UI.sendDecimals = () => 6;
+    assert.strictEqual(context.sendAllAmount(), '9007199254.740993', 'shipped Send all uses the selected token decimals');
     console.log('✓ send all is exact to the satoshi, past the range a float can hold');
   }
 

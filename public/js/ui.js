@@ -295,6 +295,7 @@ const UI = (() => {
       if (rn) { rn.textContent = c.demo ? 'DEMO' : netLabel(); rn.className = 'badge ' + (c.demo ? 'demo' : c.testnet ? 'testnet' : 'mainnet'); }
       const ko = byId('send-option-koin'); if (ko) ko.textContent = sym();
       const vo = byId('send-option-vhp'); if (vo) vo.disabled = !canSendAsset('vhp');
+      syncSendAssets();
       renderSendSummary();
       const s2 = byId('recv-suffix'); if (s2) s2.textContent = sym();
       const tn = byId('tok-network'); if (tn) tn.textContent = netLabel();
@@ -446,6 +447,7 @@ const UI = (() => {
       }
     }
     /* send sheet helper + summary */
+    syncSendAssets();
     renderSendSummary();
     /* about */
     const ap = byId('about-prices');
@@ -529,7 +531,9 @@ const UI = (() => {
     sendNote.hidden = canSendAsset(r.id);
     sendNote.textContent = r.id === 'vhp'
       ? 'VHP sending is being updated. Refresh and try again shortly.'
-      : 'This wallet sends KOIN and VHP. Sending other tokens is coming.';
+      : CTX.cfg.sendCustomTokens !== true
+        ? 'Added-token sending is unavailable. Refresh the wallet and try again shortly.'
+        : 'Token details are unavailable. Refresh before sending this token.';
     const cr = byId('tok-contract-row'), cb = byId('tok-contract');
     if (r.address) { cr.hidden = false; cb.textContent = shortAddr(r.address); cb.dataset.full = r.address; }
     else { cr.hidden = true; cb.textContent = ''; delete cb.dataset.full; }
@@ -595,10 +599,43 @@ const UI = (() => {
   }
 
   /* ---------------- send sheet ---------------- */
-  function canSendAsset(id) {
-    return id === 'koin' || (id === 'vhp' && Array.isArray(CTX.cfg.sendAssets) && CTX.cfg.sendAssets.includes('vhp'));
+  function sendRow(id = sendAsset) {
+    if (!CTX.model) return null;
+    if (id === 'koin' || id === 'vhp') return CTX.model[id] || null;
+    return (CTX.model.others || []).find(r => r.id === id && r.address === id) || null;
   }
-  const sendSymbol = () => sendAsset === 'vhp' ? 'VHP' : sym();
+  function canSendAsset(id) {
+    if (id === 'koin') return true;
+    if (id === 'vhp') return Array.isArray(CTX.cfg.sendAssets) && CTX.cfg.sendAssets.includes('vhp');
+    const row = sendRow(id);
+    return CTX.cfg.sendCustomTokens === true && !CTX.cfg.demo && typeof id === 'string'
+      && /^1[1-9A-HJ-NP-Za-km-z]{24,34}$/.test(id)
+      && !!row && !row.unavailable && TokenAmounts.validDecimals(row.decimals);
+  }
+  const sendSymbol = () => sendAsset === 'vhp' ? 'VHP' : sendAsset === 'koin' ? sym() : (sendRow() || {}).symbol || 'token';
+  const sendDecimals = () => sendAsset === 'koin' || sendAsset === 'vhp' ? 8 : (sendRow() || {}).decimals;
+
+  function syncSendAssets() {
+    const select = byId('send-asset');
+    if (!select) return;
+    select.querySelectorAll('option[data-custom-token]').forEach(option => option.remove());
+    const rows = CTX.model && CTX.model.others || [];
+    for (const row of rows) {
+      const option = el('option', '', `${row.symbol || 'Token'} · ${shortAddr(row.address || row.id)}`);
+      option.value = row.id; option.dataset.customToken = 'true';
+      option.disabled = !canSendAsset(row.id);
+      select.appendChild(option);
+    }
+    // A refresh/removal must never silently change an in-progress custom
+    // token send into KOIN. Keep an unavailable selection until the user
+    // deliberately chooses another asset.
+    if (sendAsset !== 'koin' && sendAsset !== 'vhp' && !rows.some(row => row.id === sendAsset)) {
+      const option = el('option', '', 'Token unavailable · ' + shortAddr(sendAsset));
+      option.value = sendAsset; option.dataset.customToken = 'true'; option.disabled = true;
+      select.appendChild(option);
+    }
+    select.value = sendAsset;
+  }
   function setSendAsset(id) {
     if (sendBusy || !canSendAsset(id)) return;
     if (id !== sendAsset) {
@@ -611,6 +648,7 @@ const UI = (() => {
     renderSendSummary();
   }
   function openSend(id = 'koin') {
+    if (!canSendAsset(id)) return;
     setSendAsset(id);
     openSheet('sheet-send', { focus: '#send-amount' });
   }
@@ -625,7 +663,13 @@ const UI = (() => {
     if (!toEl || !amtEl || !sum) return;
     const symbol = sendSymbol();
     for (const id of ['sym2', 'send-suffix']) { const n = byId(id); if (n) n.textContent = symbol; }
-    const row = CTX.model && CTX.model[sendAsset];
+    const row = sendRow();
+    const custom = sendAsset !== 'koin' && sendAsset !== 'vhp';
+    const contract = byId('send-token-contract');
+    contract.hidden = !custom;
+    contract.textContent = custom ? 'Token contract: ' + sendAsset : '';
+    byId('ss-contract-row').hidden = !custom;
+    byId('ss-contract').textContent = custom ? sendAsset : '';
     const avail = byId('send-avail');
     if (avail) avail.textContent = 'Available ' + (!row || row.unavailable ? '—' : row.amountText + ' ' + symbol);
     const to = toEl.value.trim(), amt = amtEl.value.trim();
@@ -636,7 +680,7 @@ const UI = (() => {
       else { chk.textContent = 'Not a Koinos address yet'; chk.className = 'check warn'; }
     }
     const n = Number(amt);
-    const unitPrice = CTX.model && (sendAsset === 'vhp' ? CTX.model.vhpUsd : CTX.model.koinUsd);
+    const unitPrice = !custom && CTX.model ? (sendAsset === 'vhp' ? CTX.model.vhpUsd : CTX.model.koinUsd) : null;
     const priced = unitPrice != null && /^\d+(\.\d+)?$/.test(amt) && n > 0;
     let usd = priced ? Portfolio.fmtUsd(n * unitPrice) : null;
     if (usd) {
@@ -963,7 +1007,7 @@ const UI = (() => {
   return {
     showTab, openSheet, closeSheet, toast, onView, applyIntent, setContext, reset, promptInstall, installOffer, setPasskeyBusy,
     paintPortfolio, paintProtection, renderSendSummary, decorateAddr, openToken,
-    sendAsset: () => sendAsset, sendSymbol, canSendAsset, setSendBusy,
+    sendAsset: () => sendAsset, sendSymbol, sendDecimals, canSendAsset, setSendBusy,
     currentTab: () => currentTab, openSheetId: () => (sheetEl ? sheetEl.id : null),
   };
 })();

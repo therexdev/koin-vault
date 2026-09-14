@@ -26,12 +26,14 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const chain = require('./tools/chain');
+const TokenAmounts = require('./public/js/token-amounts');
 const veive = require('./tools/veive');
 const funding = require('./tools/funding');
 const appSurface = require('./tools/app-surface');
 const dappRelay = require('./tools/dapp-relay');
 const dappAuth = require('./tools/dapp-auth');
 const walletBackend = require('./tools/wallet-backend');
+const { createTokenService } = require('./tools/vault-token-sends');
 const dappLaunch = require('./tools/dapp-launch');
 const dappProducer = require('./tools/dapp-producer');
 const { createPrices } = require('./tools/prices');
@@ -101,7 +103,8 @@ let BOOTING = true;
 let BOOT_ERROR = false;
 const forwardWallet = CFG.backendUrl && CFG.backendUrl !== 'local'
   ? walletBackend.createProxy({ backendUrl: CFG.backendUrl, publicUrl: CFG.publicUrl || 'https://wallet.usekoinos.com',
-      rpId: CFG.passkeyRpId, secret: CFG.sponsorWif, clientIp }) : null;
+      rpId: CFG.passkeyRpId, secret: CFG.sponsorWif, clientIp,
+      configureResponse: data => vaultTokens.configureResponse(data) }) : null;
 const prices = createPrices({
   chain, network: CFG.network, ethProvider: priceEthProvider, ethSwap,
   coingecko: process.env.PRICES_COINGECKO !== '0',
@@ -175,6 +178,8 @@ const explorerTx = (txid) => (NETWORKS[CFG.network].explorer ? `${NETWORKS[CFG.n
 /* ---------------- API ---------------- */
 
 const api = {};
+const vaultTokens = forwardWallet ? createTokenService({ chain, network: CFG.network, modules: CFG.modules,
+  sponsorWif: CFG.sponsorWif, demo: CFG.demo, rateLimited, maxTransfersPerDayAddr: CFG.maxTransfersPerDayAddr }) : null;
 
 function dappSession(body) {
   const session = dappRelay.get(body && (body.sessionId || body.id), body && body.secret);
@@ -379,6 +384,7 @@ api.config = async (_params, surface = {}) => {
     testnet: !!net.testnet,
     nativeSymbol: net.nativeSymbol,
     sendAssets: ['koin', 'vhp'],
+    sendCustomTokens: true,
     explorer: net.explorer,
     androidApp: CFG.androidFingerprints.length ? CFG.androidPackage : null,
     demo: DEMO,
@@ -629,16 +635,21 @@ api.prepareRegister = async (body, ip) => {
   return { ok: true, ref, tx };
 };
 
-/** Prepare a sponsored KOIN or VHP transfer: sponsor pays, the account signs.
+/** Prepare a sponsored standard-token transfer: sponsor pays, the account signs.
     For smart accounts no proof is needed here — a prepared transaction is
     inert until the passkey signs it and the CHAIN verifies that signature;
     for plain (legacy v1) addresses the secp proof still applies. */
 api.prepare = async (body, ip) => {
-  // Only these native assets are sendable. Never accept a caller's contract
-  // address or silently fall back to KOIN for an unknown asset.
+  // Custom assets are identified by contract address, not symbol. Native
+  // tokens keep their explicit IDs; no unknown asset can fall back to KOIN.
   const asset = body.asset === undefined ? 'koin' : body.asset;
-  if (asset !== 'koin' && asset !== 'vhp') throw httpError(400, 'choose KOIN or VHP to send');
-  const symbol = asset === 'vhp' ? 'VHP' : NETWORKS[CFG.network].nativeSymbol;
+  const net = NETWORKS[CFG.network];
+  const custom = asset !== 'koin' && asset !== 'vhp';
+  if (custom && (typeof asset !== 'string' || !chain.isAddr(asset) || asset === net.koinContract || asset === net.vhpContract)) {
+    throw httpError(400, 'choose KOIN or VHP, or a valid added token contract to send');
+  }
+  let symbol = asset === 'vhp' ? 'VHP' : net.nativeSymbol;
+  let decimals = 8;
   const smart = veive.isSmartAccount(body.address);
   if (!smart) {
     const err = verifyProof(body, 'transfer');
@@ -655,13 +666,21 @@ api.prepare = async (body, ip) => {
   const address = body.address;
   const to = String(body.to || '').trim();
   if (!chain.isAddr(to)) throw httpError(400, 'a valid destination address is required');
+  if (custom) {
+    if (DEMO) throw httpError(400, 'Added token transfers require a live chain connection');
+    // Metadata comes from the chain. Ignore any symbol, decimals or ABI
+    // supplied by the client when constructing the actual transfer.
+    const meta = await chain.tokenMeta(asset, { fresh: true });
+    decimals = meta.decimals;
+    if (!TokenAmounts.validDecimals(decimals)) throw httpError(400, 'This token has unsupported decimals');
+    symbol = meta.symbol || '?';
+  }
   if (to === address) throw httpError(400, `that would send ${symbol} to yourself`);
   const amount = String(body.amount || '').trim();
-  if (!/^\d+(\.\d{1,8})?$/.test(amount)) throw httpError(400, 'amount must be a positive number (max 8 decimals)');
-  const [whole, fraction = ''] = amount.split('.');
-  const sats = BigInt(whole) * 100000000n + BigInt(fraction.padEnd(8, '0'));
-  if (sats <= 0n) throw httpError(400, 'amount must be a positive number (max 8 decimals)');
-  if (sats > 18446744073709551615n) throw httpError(400, 'amount exceeds the token transfer limit');
+  let units;
+  try { units = TokenAmounts.toUnits(amount, decimals); }
+  catch (e) { throw httpError(400, e.message); }
+  const sats = BigInt(units);
 
   if (rateLimited('tx:addr:' + address, CFG.maxTransfersPerDayAddr, 24 * 3600000)) {
     throw httpError(429, 'that account has sent a lot today — come back tomorrow');
@@ -678,18 +697,22 @@ api.prepare = async (body, ip) => {
     return { ok: true, demo: true, asset, ref, tx: { id } };
   }
 
-  const balance = BigInt(await (asset === 'vhp' ? chain.vhpBalanceSats(address) : chain.koinBalanceSats(address)));
-  if (balance < sats) throw httpError(400, `not enough ${symbol} — you hold ${fromSats(balance, 8)}`);
+  const balance = BigInt(await (custom ? chain.tokenBalanceSats(asset, address)
+    : asset === 'vhp' ? chain.vhpBalanceSats(address) : chain.koinBalanceSats(address)));
+  if (balance < sats) throw httpError(400, `not enough ${symbol} — you hold ${fromSats(balance, decimals)}`);
 
   const sponsorMana = await chain.mana(chain.sponsorAddress());
   if (sponsorMana < CFG.minSponsorMana) {
     throw httpError(503, 'the sponsor wallet is recharging its mana — try again in a few minutes');
   }
 
-  const ops = [await (asset === 'vhp' ? chain.opVhpTransfer(address, to, sats.toString()) : chain.opKoinTransfer(address, to, sats.toString()))];
+  const ops = [await (custom ? chain.opTokenTransfer(asset, address, to, units)
+    : asset === 'vhp' ? chain.opVhpTransfer(address, to, units) : chain.opKoinTransfer(address, to, units))];
   const tx = await chain.prepareUserTx(address, ops, smart ? { rcLimit: chain.K.rcLimitSmart } : {});
-  const ref = rememberPrepared(tx.id, address, { smart });
-  return { ok: true, asset, ref, tx };
+  const ref = rememberPrepared(tx.id, address, { smart, ...(custom ? { transaction: structuredClone(tx) } : {}) });
+  return { ok: true, asset, ref, tx,
+    transfer: { contract: custom ? asset : asset === 'vhp' ? net.vhpContract : net.koinContract,
+      symbol, decimals, units } };
 };
 
 /** Broadcast a signed prepared transaction (sponsor co-signs as payer).
@@ -700,6 +723,8 @@ api.submit = async (body, _ip, surface = {}) => {
   if (!known || known.expires < Date.now()) throw httpError(400, 'this action expired — start it again');
   if (surface.android && known.fundingTap) throw httpError(403, 'Conversions are not available in the Android app');
   PREPARED.delete(String(body.ref));
+  if (known.transaction && (JSON.stringify(body.transaction?.header) !== JSON.stringify(known.transaction.header)
+    || JSON.stringify(body.transaction?.operations) !== JSON.stringify(known.transaction.operations))) throw httpError(400, 'Transaction changed after preparation');
   if (known.demo) {
     if (known.smart) await demoCheckSmartSignature(body.transaction, known);
     const smart = known.register ? veive.addCredential(known.address, known.register) : undefined;
@@ -1033,6 +1058,7 @@ const POST_ROUTES = {
   '/api/dapp/launch': api.dappLaunch,
   '/api/dapp/request': api.dappRequest, '/api/dapp/approve': api.dappApprove,
   '/api/dapp/reject': api.dappReject, '/api/dapp/disconnect': api.dappDisconnect,
+  '/api/token/prepare': api.prepare, '/api/token/submit': api.submit,
 };
 
 const server = http.createServer(async (req, res) => {
@@ -1042,7 +1068,18 @@ const server = http.createServer(async (req, res) => {
     const surface = appSurface.requestSurface(pathname, req.headers);
     const apiPath = surface.apiPath;
     if (apiPath.startsWith('/api/')) {
-      if (forwardWallet) return await forwardWallet(req, res);
+      if (forwardWallet) {
+        if (!['/api/token/prepare', '/api/token/submit'].includes(apiPath)) return await forwardWallet(req, res);
+        res.setHeader('Content-Type', 'application/json');
+        res.setHeader('Cache-Control', 'no-store');
+        if (req.method !== 'POST') throw httpError(405, 'Use POST for token transfers');
+        if (req.headers.origin !== new URL(CFG.publicUrl).origin) throw httpError(403, 'Send from the KOIN Vault site');
+        if (rateLimited('vault-token:api:' + clientIp(req), 120, 60000)) throw httpError(429, 'Slow down');
+        const body = await readBody(req, 64 * 1024);
+        const out = apiPath === '/api/token/prepare' ? await vaultTokens.prepare(body, clientIp(req)) : await vaultTokens.submit(body);
+        res.writeHead(200);
+        return res.end(JSON.stringify(out));
+      }
       if (BOOTING) {
         res.writeHead(503, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Retry-After': '3' });
         return res.end(JSON.stringify({ error: BOOT_ERROR ? 'Wallet startup failed. Check the application runtime log.' : 'Wallet is starting. Please reload in a few seconds.' }));
@@ -1119,7 +1156,7 @@ function applyMode() {
 
 (async () => {
   if (forwardWallet) {
-    console.log('ready: wallet frontend; all API requests use the original wallet backend');
+    console.log('ready: wallet frontend; added-token sends run here; account and funding APIs use the original wallet backend');
     return; // Never open account files, claim a data lock, or start funding here.
   }
   console.log('KOIN Vault — Veive smart accounts');

@@ -10,6 +10,7 @@ const to = NETWORKS.mainnet.koinContract;
 let balances = { koin: '0', vhp: '9007199254740993' }, mana = 100, prepared = 0;
 const reads = [], remembered = [];
 const context = {
+  TokenAmounts: require('../public/js/token-amounts'),
   api: {}, DEMO: false, NETWORKS, CFG: { network: 'mainnet', minSponsorMana: 20, maxTransfersPerDayAddr: 100 },
   veive: { isSmartAccount: () => true, ensureReady: async () => {} },
   verifyProof: () => null,
@@ -65,11 +66,11 @@ async function checkOperation(result, contract, value) {
   console.log('✓ Both networks serialize exact VHP transfers, including Send all above float precision and one satoshi; KOIN still works');
 
   const before = prepared;
-  for (const asset of ['VHP', '', null, 'other', '__proto__', NETWORKS.mainnet.vhpContract, {}]) {
+  for (const asset of ['VHP', '', null, 'other', '__proto__', NETWORKS.harbinger.vhpContract, {}]) {
     await assert.rejects(prepare({ asset }), /choose KOIN or VHP/);
   }
   for (const amount of ['0', '0.00000000', '-1', '1e2', 'Infinity', 'NaN', '.5', '1.', '1.000000001']) {
-    await assert.rejects(prepare({ amount }), /positive number/);
+    await assert.rejects(prepare({ amount }), /positive number/i);
   }
   await assert.rejects(prepare({ amount: '184467440737.09551616' }), /transfer limit/);
   await assert.rejects(prepare({ to: 'bad-address' }), /destination/);

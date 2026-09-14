@@ -60,7 +60,7 @@ const IDS = {
   'ui.js (send sheet)': [
     'sheet-send', 'btn-send-close', 'send-from', 'send-asset', 'send-option-koin', 'send-option-vhp', 'btn-paste', 'send-to-check', 'send-suffix', 'send-avail',
     'send-usd', 'sign-summary', 'ss-to', 'ss-amount', 'ss-signer', 'ss-network', 'send-offline', 'send-gate',
-    'btn-send-done',
+    'btn-send-done', 'send-token-contract', 'ss-contract-row', 'ss-contract',
   ],
   'ui.js (receive sheet)': [
     'sheet-receive', 'btn-recv-close', 'recv-net', 'receive-qr', 'btn-recv-copy', 'btn-recv-share',
@@ -80,7 +80,7 @@ const IDS = {
   ],
 };
 
-const SCRIPT_ORDER = ['client', 'webauthn-wire', 'passkey', 'recovery', 'fund', 'qr', 'receive', 'portfolio', 'ui', 'app'];
+const SCRIPT_ORDER = ['client', 'webauthn-wire', 'passkey', 'recovery', 'fund', 'qr', 'receive', 'portfolio', 'token-amounts', 'ui', 'app'];
 
 /* Elements that must sit INSIDE #view-wallet so show() hides them with it. */
 const INSIDE_WALLET = [

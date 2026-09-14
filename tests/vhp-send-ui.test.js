@@ -13,6 +13,7 @@ function node(id) {
   return nodes.get(id);
 }
 const context = vm.createContext({
+  TokenAmounts: require('../public/js/token-amounts'), TOKEN_BALANCES: {},
   byId: node, $: selector => node(selector.slice(1)),
   CTX: { cfg: { sendAssets: ['koin', 'vhp'] }, model: {
     koin: { amountText: '12', sats: '1200000000' }, vhp: { amountText: '40', sats: '4000000000' }, koinUsd: 2, vhpUsd: 0.5,
@@ -22,9 +23,9 @@ const context = vm.createContext({
   ADDRESS: 'fixture-account', ACTIVE: true, RECOVERY: null, SENDING: false,
   BALANCE_SATS: '1200000000', VHP_BALANCE_SATS: '9007199254740993', paint() {},
 });
-vm.runInContext(ui.slice(ui.indexOf('  function canSendAsset('), ui.indexOf('  function paintOffline(')), context);
-vm.runInContext('var UI = { sendAsset: () => sendAsset, sendSymbol, canSendAsset, setSendBusy };', context);
-vm.runInContext(app.slice(app.indexOf('  function sendAllAmount('), app.indexOf("  $('#btn-send-all')")), context);
+vm.runInContext(ui.slice(ui.indexOf('  function sendRow('), ui.indexOf('  function paintOffline(')), context);
+vm.runInContext('var UI = { sendAsset: () => sendAsset, sendSymbol, sendDecimals, canSendAsset, setSendBusy };', context);
+vm.runInContext(app.slice(app.indexOf('  function sendAllBalance('), app.indexOf("  $('#btn-send-all')")), context);
 vm.runInContext(app.slice(app.indexOf("  $('#btn-send').addEventListener"), app.indexOf('  /* ---------------- scan a QR code')), context);
 
 (async () => {
@@ -78,7 +79,7 @@ vm.runInContext(app.slice(app.indexOf("  $('#btn-send').addEventListener"), app.
   resolve(); await pending; finishSign = null;
   assert.equal(calls[0].body.asset, 'vhp'); assert.equal(calls[0].body.amount, '1.00000001');
   assert.equal(submitted, 1); assert.equal(context.sendBusy, false); assert.equal(node('send-asset').disabled, false);
-  assert.match(node('send-status').innerHTML, /Sent VHP/);
+  assert.match(node('send-status').textContent, /Sent VHP/);
   assert.equal(node('send-amount').value, '');
   node('send-amount').value = '1'; node('send-to').value = 'recipient';
   prepAsset = undefined;
@@ -88,7 +89,7 @@ vm.runInContext(app.slice(app.indexOf("  $('#btn-send').addEventListener"), app.
   prepAsset = 'vhp'; signError = Object.assign(new Error('cancelled'), { name: 'NotAllowedError' });
   await click();
   assert.equal(submitted, 1); assert.equal(context.sendBusy, false);
-  assert.match(node('send-status').innerHTML, /nothing was sent/);
+  assert.match(node('send-status').textContent, /nothing was sent/);
   context.setSendAsset('koin'); node('send-amount').value = '2'; prepAsset = undefined; signError = null;
   await click(); assert.equal(submitted, 2, 'Legacy KOIN responses still sign and submit');
   console.log('✓ VHP prepare/sign/submit, duplicate prevention, cancellation, and rejection of an accidental KOIN preparation');
