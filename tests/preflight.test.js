@@ -26,7 +26,7 @@ let HOOK = null;
   require.cache[path].exports = dispatcher;
 }
 
-const { Serializer, Signer, utils } = require("koilib");
+const { Serializer, Signer, Transaction, utils } = require("koilib");
 const chain = require("../tools/chain");
 // Preserve the gateway reason; this is distinct from passkey validation.
 assert.strictEqual(chain.humanChainError(new Error(JSON.stringify({
@@ -147,6 +147,70 @@ chain.configure({
     assert.strictEqual(out.value, null, "an unreadable threshold is null, never 0");
     assert.ok(out.error, "and carries its reason");
     console.log("✓ validator threshold: empty means 0, set reads back, unreadable stays null");
+  }
+
+  // Funding sends recheck the signed ceiling AFTER preflight, from inside
+  // the shared send queue. Read-only P-256 diagnostics may exceed a node's
+  // compute cap without rejecting the real transaction.
+  {
+    const key = Signer.fromSeed('fund-mana-sponsor');
+    const payer = key.getAddress();
+    chain.configure({ sponsorWif: key.getPrivateKey('wif') });
+    const b64 = value => utils.encodeBase64url(value);
+    const limit = '10000000000';
+    async function signedFixture(selfPaid = false, nonce = 'CAE=') {
+      const tx = await Transaction.prepareTransaction({ header: {
+        chain_id: b64(Buffer.from('1220' + 'ab'.repeat(32), 'hex')), nonce,
+        payer: selfPaid ? ACCOUNT : payer, ...(selfPaid ? {} : { payee: ACCOUNT }), rc_limit: limit,
+      }, operations: [await chain.opKoinTransfer(ACCOUNT, payer, '1')] });
+      const auth = await ser.serialize({ credential_id: 'fund-mana-credential',
+        signature: b64(Buffer.alloc(64, 1)), authenticator_data: b64(Buffer.alloc(37)),
+        client_data: b64(Buffer.from(JSON.stringify({ type: 'webauthn.get',
+          challenge: b64(Buffer.from(tx.id)), origin: 'https://koinvault.app' }))),
+      }, 'authentication_data');
+      tx.signatures = [b64(Buffer.concat([Buffer.from([255, 2]), auth]))];
+      return tx;
+    }
+    let available = 9999999999n, sends = 0;
+    const calls = serve(body => {
+      if (body.method === 'chain.read_contract') {
+        if (body.params.contract_id === MODSIGN) return { error: { message: 'compute bandwidth limit exceeded' } };
+        return { result: { result: 'CAE=' } }; // validator threshold 1
+      }
+      if (body.method === 'chain.get_account_rc') return { result: { rc: available.toString() } };
+      if (body.method === 'chain.submit_transaction') {
+        sends++;
+        assert.strictEqual(body.params.transaction.header.rc_limit, limit);
+        available -= 2500000000n;
+        return { result: { receipt: { id: body.params.transaction.id, reverted: false } } };
+      }
+      if (body.method === 'transaction_store.get_transactions_by_id') {
+        return { result: { transactions: [{ containing_blocks: ['fixture-block'] }] } };
+      }
+      throw new Error('unexpected test RPC: ' + body.method);
+    });
+    for (const selfPaid of [false, true]) {
+      const tx = await signedFixture(selfPaid);
+      const submit = selfPaid ? chain.submitSelfPaid : chain.submitSmartCosigned;
+      await assert.rejects(submit(tx, tx.id, ACCOUNT, ['fund-mana-credential'], { checkMana: true }),
+        e => e.code === 'INSUFFICIENT_PAYER_MANA');
+      assert.strictEqual(calls.filter(c => c.method === 'chain.get_account_rc').at(-1).params.account,
+        selfPaid ? ACCOUNT : payer, 'check the actual signed payer');
+      assert.strictEqual(tx.signatures.length, 1, 'do not alter the signed transaction on low mana');
+      assert.strictEqual(sends, 0, 'insufficient current mana must not broadcast');
+    }
+    available = 10000000000n;
+    const selfTx = await signedFixture(true);
+    assert.strictEqual(await chain.submitSelfPaid(selfTx, selfTx.id, ACCOUNT, ['fund-mana-credential'], { checkMana: true }), selfTx.id);
+    assert.strictEqual(sends, 1);
+    available = 10000000000n;
+    const first = await signedFixture(false), second = await signedFixture(false, 'CAI=');
+    const outcomes = await Promise.allSettled([first, second].map(tx =>
+      chain.submitSmartCosigned(tx, tx.id, ACCOUNT, ['fund-mana-credential'], { checkMana: true })));
+    assert.strictEqual(outcomes.filter(r => r.status === 'fulfilled').length, 1);
+    assert.strictEqual(outcomes.find(r => r.status === 'rejected').reason.code, 'INSUFFICIENT_PAYER_MANA');
+    assert.strictEqual(sends, 2, 'the second queued send must see mana consumed by the first');
+    console.log('✓ funding mana: signed ceiling, actual payer, read-only compute errors and queued capacity recheck');
   }
 
   HOOK = null;

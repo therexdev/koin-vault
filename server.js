@@ -805,11 +805,30 @@ api.submit = async (body, _ip, surface = {}) => {
     if (known.fundingTap) funding.onTapDone(known.fundingTap.account, known.fundingTap.step, known.txId);
     return { ok: true, demo: true, txid: known.txId, explorer: null, smart };
   }
-  const txid = known.selfPaid
-    ? await chain.submitSelfPaid(body.transaction, known.txId, known.address, veive.credentialsFor(known.address))
-    : known.smart
-      ? await chain.submitSmartCosigned(body.transaction, known.txId, known.address, veive.credentialsFor(known.address))
-      : await chain.submitCosigned(body.transaction, known.txId, known.address);
+  let txid;
+  try {
+    const submitOptions = { checkMana: !!known.fundingTap };
+    txid = known.selfPaid
+      ? await chain.submitSelfPaid(body.transaction, known.txId, known.address, veive.credentialsFor(known.address), submitOptions)
+      : known.smart
+        ? await chain.submitSmartCosigned(body.transaction, known.txId, known.address, veive.credentialsFor(known.address), submitOptions)
+        : await chain.submitCosigned(body.transaction, known.txId, known.address);
+  } catch (e) {
+    if (!known.fundingTap || e.broadcast) throw e;
+    const reason = chain.humanChainError(e);
+    // Keep the pending funding job and distinguish payer capacity from a
+    // transaction running out of its own signed budget. Neither is evidence
+    // of an invalid passkey; the optional read-only diagnostic can itself
+    // hit a node's separate compute limit.
+    if (e.code === 'INSUFFICIENT_PAYER_MANA' || /payer does not have the rc to cover transaction rc limit/i.test(reason)) {
+      throw httpError(503, `${known.selfPaid ? 'Your wallet is' : 'The sponsor wallet is'} recharging the mana needed for this step. Try again in a few minutes. No additional deposit is needed.`);
+    }
+    if (/\binsufficient rc\b/i.test(reason)) {
+      const limit = Number(known.transaction?.header.rc_limit || body.transaction?.header?.rc_limit) / 1e8;
+      throw httpError(409, `This swap exceeded its signed mana limit (${limit} mana). It is still waiting at the final step. No additional deposit is needed.`);
+    }
+    throw e;
+  }
   /* The register landed on-chain — mirror it into the store so sign-in and
      the submit allowlist recognize the new credential immediately. */
   const smart = known.register ? veive.addCredential(known.address, known.register) : undefined;

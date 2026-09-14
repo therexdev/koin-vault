@@ -26,9 +26,11 @@ const KOINDX = {
 };
 const KOIN_KEY = "koin"; // KoinDX's string key for KOIN (not its address)
 const DEFAULT_SLIPPAGE_BPS = 100; // 1%
-// Mana ceiling for approve + swap through a smart account (adds the on-chain
-// WebAuthn verification to the desktop app's 4-KOIN ceiling).
-const DEFAULT_SWAP_RC = "2000000000";
+// The smart-account approval and swap can each validate the passkey, in
+// addition to transaction authorization and router/pool execution. The old
+// 20-mana ceiling ran out during execution ("insufficient rc"). Match the
+// 100-mana trade ceiling; only actual consumption is charged to the payer.
+const DEFAULT_SWAP_RC = "10000000000";
 
 // Uniswap-v2 constant-product output with KoinDX's 0.25% fee (9975/10000).
 // Matches the router's on-chain get_amount_out exactly (verified).
