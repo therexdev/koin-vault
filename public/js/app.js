@@ -296,10 +296,8 @@
   /* ---------------- landing: THE button ---------------- */
   const go = $('#btn-go');
   let ENTERING = false;
-  let LOCAL_AUTHENTICATOR = false;
   async function refreshLandingSupport() {
     const ok = Passkey.supported();
-    LOCAL_AUTHENTICATOR = ok && await Passkey.platformReady();
     go.disabled = !ok || ENTERING;
     $('#btn-phone-signin').disabled = !ok || ENTERING;
     $('#btn-phone-create').disabled = !ok || ENTERING;
@@ -312,12 +310,13 @@
 
   function friendly(e) {
     if (e && e.name === 'NotAllowedError') return 'Prompt closed — nothing changed';
-    if (e && e.name === 'InvalidStateError') return 'This device already holds an account passkey — signing you in…';
+    if (e && e.name === 'InvalidStateError') return 'A new passkey could not be created. Try another passkey provider, or choose a saved passkey to sign in.';
     return (e && e.message) || 'Passkey ceremony failed';
   }
 
-  async function signIn(pickAnother = false, usePhone) {
-    const credentialId = await Passkey.identify(pickAnother, { usePhone });
+  async function signIn(usePhone) {
+    // Sign-in always discovers all accounts, regardless of the last used key.
+    const credentialId = await Passkey.identify(true, { usePhone });
     const who = await api('/api/whoami', { credentialId });
     ADDRESS = who.address; storeAddr(ADDRESS);
     RECOVERY = null;
@@ -327,12 +326,7 @@
   }
 
   async function createAccount(usePhone = false) {
-    let made;
-    try { made = await Passkey.createCredential({ usePhone }); }
-    catch (e) {
-      if (e && e.name === 'InvalidStateError') return signIn(false, usePhone);
-      throw e;
-    }
+    const made = await Passkey.createCredential({ usePhone });
     const rec = await api('/api/create-account', {
       credentialId: made.credentialId, publicKey: made.publicKey, name: 'passkey',
     });
@@ -343,7 +337,7 @@
     show('#view-wallet');
   }
 
-  async function enter(makeNew, pickAnother = false, usePhone) {
+  async function enter(makeNew, usePhone) {
     if (ENTERING) return;
     ENTERING = true;
     go.disabled = true;
@@ -354,7 +348,7 @@
     UI.closeSheet({ immediate: true, restoreFocus: false });
     try {
       if (makeNew) await createAccount(usePhone);
-      else await signIn(pickAnother, usePhone);
+      else await signIn(usePhone);
     } catch (e) {
       if (e.status === 404) {
         alertLine('No wallet was found for that passkey. Choose another saved passkey, or use a registered recovery kit.');
@@ -369,19 +363,18 @@
     }
   }
 
-  function usePhone() {
+  function chooseAccount() {
     if (ENTERING || !Passkey.supported()) return;
+    if (alertEl) alertEl.textContent = '';
     UI.openSheet('sheet-phone');
   }
-  go.addEventListener('click', () => {
-    if (!LOCAL_AUTHENTICATOR && !Passkey.remembered()) return usePhone();
-    return enter(!Passkey.remembered());
-  });
-  $('#btn-use-phone').addEventListener('click', (e) => { e.preventDefault(); usePhone(); });
-  $('#btn-phone-signin').addEventListener('click', () => enter(false, true, true));
-  $('#btn-saved-signin').addEventListener('click', () => enter(false, true, false));
-  $('#btn-phone-create').addEventListener('click', () => enter(true, false, false));
-  $('#btn-unlock-existing').addEventListener('click', (e) => { e.preventDefault(); return enter(false, true, false); });
+  // A remembered key must never decide whether the user signs in or creates.
+  go.addEventListener('click', chooseAccount);
+  $('#btn-use-phone').addEventListener('click', (e) => { e.preventDefault(); chooseAccount(); });
+  $('#btn-phone-signin').addEventListener('click', () => enter(false, true));
+  $('#btn-saved-signin').addEventListener('click', () => enter(false, false));
+  $('#btn-phone-create').addEventListener('click', () => enter(true, false));
+  $('#btn-unlock-existing').addEventListener('click', (e) => { e.preventDefault(); return enter(false, false); });
   $('#btn-open-recover').addEventListener('click', (e) => { e.preventDefault(); show('#view-recover'); });
   $('#btn-recover-back').addEventListener('click', (e) => { e.preventDefault(); show('#view-landing'); });
 

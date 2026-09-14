@@ -51,14 +51,15 @@ const Passkey = (() => {
   /** Create the credential that will OWN the smart account. ES256 only —
       it's the one algorithm the chain's P-256 verifier speaks. */
   async function createCredential({ usePhone = false } = {}) {
-    const existing = storedId();
+    const userId = crypto.getRandomValues(new Uint8Array(16));
+    const label = 'KOIN Vault ' + Array.from(userId.slice(0, 4), byte => byte.toString(16).padStart(2, '0')).join('');
     const cred = await navigator.credentials.create({
       publicKey: {
         rp: { name: 'KOIN Vault', id: RP_ID },
         user: {
-          id: crypto.getRandomValues(new Uint8Array(16)),
-          name: 'Koinos Smart Account',
-          displayName: 'Koinos Smart Account',
+          id: userId,
+          name: label,
+          displayName: label,
         },
         challenge: crypto.getRandomValues(new Uint8Array(32)),
         timeout: 120000,
@@ -70,7 +71,9 @@ const Passkey = (() => {
           residentKey: 'required',
           userVerification: 'required',
         },
-        excludeCredentials: existing ? [{ type: 'public-key', id: fromB64u(existing) }] : [],
+        // This is a separate wallet with its own user handle. Excluding the
+        // last wallet's key would prevent another wallet on that authenticator.
+        excludeCredentials: [],
       },
     });
     const resp = cred.response;
