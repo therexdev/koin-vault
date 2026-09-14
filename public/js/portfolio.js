@@ -138,6 +138,7 @@ const Portfolio = (() => {
       /* Per-unit numbers the screen derives from (≈ $ on the send sheet,
          ≈ KOIN for VHP); null means unknown, and unknown prints as nothing. */
       koinUsd: num(prices.koinUsd && prices.koinUsd.value),
+      vhpUsd: num(prices.vhpUsd && prices.vhpUsd.value),
       vhpKoin: num(prices.vhpKoin && prices.vhpKoin.value),
       priceAt: staleLegs.length
         ? Math.min(...staleLegs.map((l) => num(l.at)).filter((t) => t != null).concat([Infinity])) === Infinity ? null

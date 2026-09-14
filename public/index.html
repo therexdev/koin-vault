@@ -379,7 +379,7 @@
         <button class="ghost" id="btn-tok-receive" type="button">Receive</button>
         <button class="cta" id="btn-tok-send" type="button">Send</button>
       </div>
-      <p class="hint center" id="tok-send-note" hidden>This wallet sends KOIN today — sending other tokens is coming.</p>
+      <p class="hint center" id="tok-send-note" hidden>This wallet sends KOIN and VHP. Sending other tokens is coming.</p>
       <dl class="details">
         <div id="tok-contract-row"><dt>Contract</dt><dd><button class="linkish mono" id="tok-contract" type="button" title="Copy contract address"></button></dd></div>
         <div><dt>Decimals</dt><dd id="tok-decimals"></dd></div>
@@ -394,6 +394,13 @@
       <button class="x" id="btn-send-close" type="button" aria-label="Close" data-close><svg class="ic"><use href="#i-x"/></svg></button>
       <h3 id="send-title">Send <span id="sym2">KOIN</span> <span class="free-chip">fees on us</span></h3>
       <p class="from">From your account <span class="mono" id="send-from">…</span></p>
+      <div class="field">
+        <label for="send-asset">Asset</label>
+        <select id="send-asset">
+          <option value="koin" id="send-option-koin">KOIN</option>
+          <option value="vhp" id="send-option-vhp" disabled>VHP</option>
+        </select>
+      </div>
       <div class="field">
         <label for="send-to">To</label>
         <div class="field-wrap">

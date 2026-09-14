@@ -36,6 +36,7 @@ const UI = (() => {
   let lastSats = {};          // row id → sats, to flash a row that grew
   let lastQr = null;          // "address|amount" last rendered in the receive sheet
   let tokenOpen = null;       // the row model shown in the token sheet
+  let sendAsset = 'koin', sendBusy = false;
 
   /* The loading markup, captured once so the screen can go back to it
      (a new account on the same device must not inherit the old numbers). */
@@ -126,6 +127,7 @@ const UI = (() => {
     showTab('tab-home');
     CTX.address = null; CTX.model = null; CTX.modelAt = null; CTX.credentials = []; CTX.credsLoaded = false; CTX.recovery = null;
     lastSats = {}; lastQr = null; tokenOpen = null;
+    setSendBusy(false); setSendAsset('koin');
     resetScreen();
     paintProtection([], null, false, false);
   }
@@ -150,7 +152,7 @@ const UI = (() => {
     if (intent.tab === 'convert') showTab('tab-convert');
     else if (intent.tab === 'security') showTab('tab-security');
     if (intent.open === 'receive') openSheet('sheet-receive');
-    else if (intent.open === 'send') openSheet('sheet-send');
+    else if (intent.open === 'send') openSend();
   }
 
   /* ---------------- sheets ---------------- */
@@ -279,6 +281,7 @@ const UI = (() => {
          while the live numbers load, instead of a blank hero. */
       if (CTX.address !== before) {
         lastSats = {}; CTX.model = null; CTX.modelAt = null; lastQr = null; tokenOpen = null;
+        setSendAsset('koin');
         const cached = restoreLast(CTX.address);
         if (cached) renderModel(cached.model, cached.at, true); else resetScreen();
         if (sheetEl && sheetEl.id === 'sheet-receive') renderReceiveQr();   // opened by a deep link before the address was known
@@ -290,7 +293,9 @@ const UI = (() => {
       const ssn = byId('ss-network'); if (ssn) ssn.textContent = netLabel();
       const rn = byId('recv-net');
       if (rn) { rn.textContent = c.demo ? 'DEMO' : netLabel(); rn.className = 'badge ' + (c.demo ? 'demo' : c.testnet ? 'testnet' : 'mainnet'); }
-      const s1 = byId('send-suffix'); if (s1) s1.textContent = sym();
+      const ko = byId('send-option-koin'); if (ko) ko.textContent = sym();
+      const vo = byId('send-option-vhp'); if (vo) vo.disabled = !canSendAsset('vhp');
+      renderSendSummary();
       const s2 = byId('recv-suffix'); if (s2) s2.textContent = sym();
       const tn = byId('tok-network'); if (tn) tn.textContent = netLabel();
     }
@@ -441,8 +446,6 @@ const UI = (() => {
       }
     }
     /* send sheet helper + summary */
-    const avail = byId('send-avail');
-    if (avail) avail.textContent = 'Available ' + (koin.unavailable ? '—' : koin.amountText + ' ' + (koin.symbol || sym()));
     renderSendSummary();
     /* about */
     const ap = byId('about-prices');
@@ -521,8 +524,12 @@ const UI = (() => {
     else if (CTX.modelFromCache && r.usd != null) { const c = document.createElement('span'); c.innerHTML = ' ' + CLOCK + ' from ' + fmtWhen(CTX.modelAt); price.appendChild(c); }
     byId('tok-mana-row').hidden = r.id !== 'koin';
     const send = byId('btn-tok-send');
-    send.disabled = r.id !== 'koin';
-    byId('tok-send-note').hidden = r.id === 'koin';
+    send.disabled = !canSendAsset(r.id);
+    const sendNote = byId('tok-send-note');
+    sendNote.hidden = canSendAsset(r.id);
+    sendNote.textContent = r.id === 'vhp'
+      ? 'VHP sending is being updated. Refresh and try again shortly.'
+      : 'This wallet sends KOIN and VHP. Sending other tokens is coming.';
     const cr = byId('tok-contract-row'), cb = byId('tok-contract');
     if (r.address) { cr.hidden = false; cb.textContent = shortAddr(r.address); cb.dataset.full = r.address; }
     else { cr.hidden = true; cb.textContent = ''; delete cb.dataset.full; }
@@ -588,9 +595,39 @@ const UI = (() => {
   }
 
   /* ---------------- send sheet ---------------- */
+  function canSendAsset(id) {
+    return id === 'koin' || (id === 'vhp' && Array.isArray(CTX.cfg.sendAssets) && CTX.cfg.sendAssets.includes('vhp'));
+  }
+  const sendSymbol = () => sendAsset === 'vhp' ? 'VHP' : sym();
+  function setSendAsset(id) {
+    if (sendBusy || !canSendAsset(id)) return;
+    if (id !== sendAsset) {
+      byId('send-amount').value = '';
+      byId('send-status').hidden = true;
+      byId('btn-send-done').hidden = true;
+    }
+    sendAsset = id;
+    byId('send-asset').value = id;
+    renderSendSummary();
+  }
+  function openSend(id = 'koin') {
+    setSendAsset(id);
+    openSheet('sheet-send', { focus: '#send-amount' });
+  }
+  function setSendBusy(busy) {
+    sendBusy = !!busy;
+    for (const id of ['send-asset', 'send-to', 'send-amount', 'btn-send-all', 'btn-scan', 'btn-paste']) {
+      const n = byId(id); if (n) n.disabled = sendBusy;
+    }
+  }
   function renderSendSummary() {
     const toEl = byId('send-to'), amtEl = byId('send-amount'), sum = byId('sign-summary');
     if (!toEl || !amtEl || !sum) return;
+    const symbol = sendSymbol();
+    for (const id of ['sym2', 'send-suffix']) { const n = byId(id); if (n) n.textContent = symbol; }
+    const row = CTX.model && CTX.model[sendAsset];
+    const avail = byId('send-avail');
+    if (avail) avail.textContent = 'Available ' + (!row || row.unavailable ? '—' : row.amountText + ' ' + symbol);
     const to = toEl.value.trim(), amt = amtEl.value.trim();
     const chk = byId('send-to-check');
     if (chk) {
@@ -599,8 +636,9 @@ const UI = (() => {
       else { chk.textContent = 'Not a Koinos address yet'; chk.className = 'check warn'; }
     }
     const n = Number(amt);
-    const priced = !!(CTX.model && CTX.model.koinUsd != null && /^\d+(\.\d+)?$/.test(amt) && n > 0);
-    let usd = priced ? Portfolio.fmtUsd(n * CTX.model.koinUsd) : null;
+    const unitPrice = CTX.model && (sendAsset === 'vhp' ? CTX.model.vhpUsd : CTX.model.koinUsd);
+    const priced = unitPrice != null && /^\d+(\.\d+)?$/.test(amt) && n > 0;
+    let usd = priced ? Portfolio.fmtUsd(n * unitPrice) : null;
     if (usd) {
       const m = CTX.model;
       if (m.demo || m.priceSource === 'sample') usd += ' (sample price)';
@@ -611,7 +649,7 @@ const UI = (() => {
     if (!to || !amt) { sum.hidden = true; return; }
     sum.hidden = false;
     byId('ss-to').textContent = groups(to);
-    byId('ss-amount').textContent = `${amt} ${sym()}` + (usd ? ` ≈ ${usd}` : '');
+    byId('ss-amount').textContent = `${amt} ${symbol}` + (usd ? ` ≈ ${usd}` : '');
     byId('ss-signer').textContent = CTX.recovery ? 'Recovery kit key' : 'Face ID / fingerprint on this device';
     byId('ss-network').textContent = netLabel();
   }
@@ -768,7 +806,7 @@ const UI = (() => {
     for (const t of TABS) { const b = byId('tabbtn-' + t.slice(4)); if (b) b.addEventListener('click', () => showTab(t)); }
     /* home actions */
     on('btn-open-receive', () => openSheet('sheet-receive'));
-    on('btn-open-send', () => openSheet('sheet-send'));
+    on('btn-open-send', () => openSend());
     on('btn-open-buy', () => showTab('tab-convert'));
     on('btn-add-token', () => openSheet('sheet-add-token', { focus: '#add-token-addr' }));
     on('protect-line', () => showTab('tab-security'));
@@ -778,7 +816,7 @@ const UI = (() => {
     document.querySelectorAll('[data-goto]').forEach((b) => b.addEventListener('click', () => showTab(b.dataset.goto)));
     /* token sheet */
     on('btn-tok-receive', () => openSheet('sheet-receive'));
-    on('btn-tok-send', () => openSheet('sheet-send', { focus: '#send-amount' }));
+    on('btn-tok-send', () => { if (tokenOpen && canSendAsset(tokenOpen.id)) openSend(tokenOpen.id); });
     on('tok-contract', () => copyText(byId('tok-contract').dataset.full, 'Contract address copied'));
     on('btn-tok-remove', () => {
       const r = tokenOpen;
@@ -816,6 +854,7 @@ const UI = (() => {
       qrTimer = setTimeout(renderReceiveQr, 200);
     });
     /* send sheet: paste, summary, done */
+    byId('send-asset').addEventListener('change', (e) => setSendAsset(e.target.value));
     on('btn-paste', async () => {
       try {
         const text = (await navigator.clipboard.readText()).trim();
@@ -924,6 +963,7 @@ const UI = (() => {
   return {
     showTab, openSheet, closeSheet, toast, onView, applyIntent, setContext, reset, promptInstall, installOffer, setPasskeyBusy,
     paintPortfolio, paintProtection, renderSendSummary, decorateAddr, openToken,
+    sendAsset: () => sendAsset, sendSymbol, canSendAsset, setSendBusy,
     currentTab: () => currentTab, openSheetId: () => (sheetEl ? sheetEl.id : null),
   };
 })();

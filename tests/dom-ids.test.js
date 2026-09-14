@@ -58,7 +58,7 @@ const IDS = {
     'tok-decimals', 'tok-network', 'tok-explorer', 'btn-tok-remove', 'btn-tok-close',
   ],
   'ui.js (send sheet)': [
-    'sheet-send', 'btn-send-close', 'send-from', 'btn-paste', 'send-to-check', 'send-suffix', 'send-avail',
+    'sheet-send', 'btn-send-close', 'send-from', 'send-asset', 'send-option-koin', 'send-option-vhp', 'btn-paste', 'send-to-check', 'send-suffix', 'send-avail',
     'send-usd', 'sign-summary', 'ss-to', 'ss-amount', 'ss-signer', 'ss-network', 'send-offline', 'send-gate',
     'btn-send-done',
   ],
