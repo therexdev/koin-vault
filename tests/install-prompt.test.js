@@ -5,8 +5,8 @@ const vm = require('node:vm');
 const path = require('node:path');
 const read = file => fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
 const client = read('public/js/client.js'), ui = read('public/js/ui.js');
-function setup({ ua = 'Android Mobile', standalone = false, android = false, event } = {}) {
-  const storage = new Map([['bw_installed', '1'], ['bw_install_snooze', String(Date.now() + 86400000)]]);
+function setup({ ua = 'Android Mobile', standalone = false, android = false, event, session = new Map() } = {}) {
+  const storage = new Map([['kv_install_snooze_v2', String(Date.now() + 259200000)], ['bw_installed', '1'], ['bw_install_snooze', String(Date.now() + 86400000)]]);
   const nodes = new Map(), handlers = new Map(), timers = [], opened = [], clicks = new Map();
   const node = id => {
     if (!nodes.has(id)) nodes.set(id, { id, hidden: true, textContent: '', lastChild: { nodeType: 3, textContent: '' } });
@@ -19,6 +19,7 @@ function setup({ ua = 'Android Mobile', standalone = false, android = false, eve
       matchMedia: () => ({ matches: standalone }) },
     document: { documentElement: { dataset: { walletClient: android ? 'android' : '' } }, querySelector: () => null },
     navigator: { userAgent: ua }, location: { pathname: android ? '/android/' : '/' },
+    sessionStorage: { getItem: key => session.get(key), setItem: (key, value) => session.set(key, value) },
     localStorage: { getItem: key => storage.get(key), setItem: (key, value) => storage.set(key, value) },
     byId: node, sheetEl: null, passkeyBusy: false, tokenOpen: null,
     setTimeout: (fn, delay) => { timers.push({ fn, delay }); }, toast() {},
@@ -36,7 +37,7 @@ function setup({ ua = 'Android Mobile', standalone = false, android = false, eve
   vm.runInContext(ui.slice(ui.indexOf('  /* ---------------- install /'), ui.indexOf('  /* ---------------- wiring')), context);
   vm.runInContext(ui.slice(ui.indexOf('    /* install prompt */'), ui.indexOf('    /* offline */')), context);
   context.paintInstall();
-  return { context, storage, node, clicks, opened, timers };
+  return { context, storage, session, node, clicks, opened, timers };
 }
 function promptEvent(outcome = 'dismissed', reject = false) {
   return { type: 'beforeinstallprompt', prevented: false, calls: 0,
@@ -53,7 +54,7 @@ function promptEvent(outcome = 'dismissed', reject = false) {
   assert.equal(s.node('btn-install-landing').hidden, false, 'Historical installed flags do not permanently hide installation');
   s.context.promptInstall(); assert.equal(s.opened.at(-1), 'sheet-install');
   s.context.closeSheet({ immediate: true }); // app.js completes configuration and shows landing.
-  assert.equal(s.storage.has('kv_install_snooze_v2'), false, 'Programmatic closure must not snooze installation');
+  assert.equal(s.session.has('kv_install_dismissed_tab'), false, 'Programmatic closure must not snooze installation');
   s.context.promptInstall(); assert.equal(s.opened.length, 2, 'Startup closure must allow the popup to return');
   s.context.closeSheet({ dismissed: true });
   s.context.promptInstall(); assert.equal(s.opened.length, 2, 'User dismissal must suppress automatic reopening');
@@ -75,6 +76,12 @@ function promptEvent(outcome = 'dismissed', reject = false) {
   const a = setup({ event: promptEvent('accepted') });
   await a.context.runInstallPrompt();
   assert.equal(a.context.installation.installed, false, 'Wait for appinstalled before declaring the app installed');
+
+  const reload = setup({ session: s.session });
+  reload.context.promptInstall(); assert.equal(reload.opened.length, 0, 'Reload respects dismissal in this tab');
+  const fresh = setup();
+  fresh.context.promptInstall(); assert.equal(fresh.opened.length, 1, 'Fresh Android/Brave visit shows instructions despite old persistent snooze');
+  assert.equal(fresh.node('install-steps-android').hidden, false);
 
   const ios = setup({ ua: 'iPhone' });
   ios.context.promptInstall(); assert.equal(ios.node('install-steps-ios').hidden, false);

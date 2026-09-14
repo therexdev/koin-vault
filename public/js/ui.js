@@ -735,13 +735,14 @@ const UI = (() => {
      (not from the home screen) it pops a sheet: Chrome on Android and
      desktop hand us a real install prompt, iOS has no API but a three-step
      recipe, other Android browsers have a menu item. "Not now" is
-     remembered for three days; installed app windows do not ask again. */
-  const LS_INSTALL_SNOOZE = 'kv_install_snooze_v2';   // ms timestamp: quiet until then
-  const INSTALL_SNOOZE_MS = 3 * 24 * 3600 * 1000;
+     remembered for this browser tab; installed app windows do not ask again. */
+  const INSTALL_DISMISSED = 'kv_install_dismissed_tab';
+  let installDismissed = false;
   let installPrompted = false;                     // once per page load
   let installRetries = 0;
-  const lsGet = (k) => { try { return localStorage.getItem(k); } catch (_) { return null; } };
-  const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch (_) {} };
+  // Uninstalling a PWA does not clear browser localStorage. Never persist
+  // dismissal there: a fresh tab must be able to offer installation again.
+  try { installDismissed = sessionStorage.getItem(INSTALL_DISMISSED) === '1'; } catch (_) {}
 
   function installEnv() {
     const ua = navigator.userAgent || '';
@@ -761,8 +762,11 @@ const UI = (() => {
     if (env.android) return 'android';
     return 'desktop';
   }
-  const installSnoozed = () => Number(lsGet(LS_INSTALL_SNOOZE) || 0) > Date.now();
-  const snoozeInstall = () => lsSet(LS_INSTALL_SNOOZE, String(Date.now() + INSTALL_SNOOZE_MS));
+  const installSnoozed = () => installDismissed;
+  const snoozeInstall = () => {
+    installDismissed = true;
+    try { sessionStorage.setItem(INSTALL_DISMISSED, '1'); } catch (_) {}
+  };
 
   function fillInstallSheet(offer) {
     const env = installEnv();
