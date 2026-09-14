@@ -7,6 +7,14 @@ const ORIGIN = "https://koinosai.com";
 const CONTRACTS = { koin: "19GYjDBVXU7keLbYvMLazsGQn3GTWHjHkK", vhp: "12Y5vW6gk8GceH53YfRkRre2Rrcsgw7Naq", pob: "159myq5YUhhoVWu3wsHKHiJYKPKGUrGiyv" };
 const abi = input => { const a = JSON.parse(JSON.stringify(input)); const n = a.koilib_types?.nested?.koinos?.nested; if (n) { delete n.btype; delete n._btype; } return a; };
 const amount = value => { if (!/^[1-9][0-9]{0,19}$/.test(String(value)) || BigInt(value) > 18446744073709551615n) throw new Error("Invalid producer amount"); const n = BigInt(value); return `${n / 100000000n}.${(n % 100000000n).toString().padStart(8, "0")}`; };
+const canonical = operation => {
+  const copy = JSON.parse(JSON.stringify(operation));
+  if (copy.call_contract) {
+    copy.call_contract.entry_point = Number(copy.call_contract.entry_point);
+    copy.call_contract.args = Buffer.from(copy.call_contract.args, 'base64url').toString('base64url');
+  }
+  return copy;
+};
 
 // KAI's approval text is decoded here from the actual contract calls. Ignore
 // app-supplied summaries. This origin cannot upload contracts, change wallet
@@ -24,7 +32,7 @@ async function reviewProducer(operations, address, network) {
     const allowed = kind === "pob" ? ["register_public_key", "burn"] : kind === "koin" ? ["transfer", "approve"] : ["transfer"];
     if (!allowed.includes(d.name)) throw new Error("Unsupported producer operation");
     const encoded = await contract.functions[d.name](d.args, { onlyOperation: true });
-    if (!isDeepStrictEqual(encoded.operation, op)) throw new Error("Noncanonical producer operation");
+    if (!isDeepStrictEqual(canonical(encoded.operation), canonical(op))) throw new Error("Noncanonical producer operation");
     decoded.push({ kind, ...d });
   }
   const last = decoded.at(-1), a = last.args;

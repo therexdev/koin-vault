@@ -1,6 +1,6 @@
 'use strict';
 
-const CACHE = 'bio-wallet-android-shell-v11';
+const CACHE = 'bio-wallet-android-shell-v12';
 const SHELL = [
   '/android/', '/android/manifest.webmanifest', '/css/wallet.css',
   '/js/client.js', '/js/app.js', '/js/passkey.js', '/js/recovery.js',

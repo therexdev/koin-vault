@@ -624,3 +624,11 @@ details.card[open] > summary { margin-bottom: 6px; }
   .tile-v { font-size: 20px; }
   .actions { gap: 8px; }
 }
+.dapp-review { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; max-height: 55vh; overflow-y: auto; }
+.dapp-ack { display: flex; align-items: flex-start; gap: .65rem; margin: 1rem 0; line-height: 1.5; }
+.dapp-ack[hidden] { display: none; }
+.dapp-ack input { width: 1.2rem; height: 1.2rem; flex-shrink: 0; margin-top: .2rem; }
+#dapp-origin, #dapp-payer { overflow-wrap: anywhere; }
+#dapp-blocked { margin-top: 1rem; }
+#dapp-blocked summary { cursor: pointer; }
+#dapp-blocked-list p { overflow-wrap: anywhere; }

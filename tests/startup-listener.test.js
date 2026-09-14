@@ -73,7 +73,7 @@ const { Signer } = require('koilib');
     assert.match(frontend.logs(), /ready: wallet frontend/);
     const connection = await (await fetch(frontend.base + '/api/dapp/create', { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: 'https://ouro.lifestyle' }, body: JSON.stringify({ name: 'OURO' }) })).json();
     assert.ok(connection.uri.startsWith('https://koinvault.app/'));
-    for (const origin of ['https://usekoinos.com', 'https://www.usekoinos.com']) {
+    for (const origin of ['https://usekoinos.com', 'https://www.usekoinos.com', 'https://unlisted-developer.example']) {
       const headers = { Origin: origin, 'Content-Type': 'application/json' };
       const preflight = await fetch(frontend.base + '/api/dapp/create', { method: 'OPTIONS', headers });
       assert.equal(preflight.headers.get('access-control-allow-origin'), origin);
@@ -85,11 +85,27 @@ const { Signer } = require('koilib');
       const status = await fetch(frontend.base + '/api/dapp/status?' + new URLSearchParams({ sessionId: pair.sessionId, secret: pair.secret }), { headers });
       assert.equal(status.headers.get('access-control-allow-origin'), origin);
       assert.equal((await status.json()).connected, false);
+      const wrong = await fetch(frontend.base + '/api/dapp/status?' + new URLSearchParams({ sessionId: pair.sessionId, secret: pair.secret }), { headers: { Origin: 'https://different.example' } });
+      assert.equal(wrong.status, 403, 'A different site cannot use this session even with the bearer secret');
     }
-    const denied = await fetch(frontend.base + '/api/dapp/create', { method: 'POST', headers: { Origin: 'https://usekoinos.com.evil.example', 'Content-Type': 'application/json' }, body: '{}' });
+    const denied = await fetch(frontend.base + '/api/dapp/create', { method: 'POST', headers: { Origin: 'http://insecure.example', 'Content-Type': 'application/json' }, body: '{}' });
     assert.equal(denied.status, 403);
     assert.equal(denied.headers.get('access-control-allow-origin'), null);
+    for (const route of ['challenge', 'connect', 'pending', 'approve', 'reject']) {
+      const attempt = await fetch(frontend.base + '/api/dapp/' + route, { method: 'OPTIONS', headers: { Origin: 'https://unlisted-developer.example' } });
+      assert.equal(attempt.status, 403, 'Wallet-only API is not exposed by open CORS');
+    }
     const proofBody = JSON.stringify({ sessionId: connection.sessionId, secret: connection.secret, address: account });
+    const readQuery = new URLSearchParams({ sessionId: connection.sessionId, secret: connection.secret });
+    for (const route of ['pending', 'status']) {
+      for (const headers of [{ 'Sec-Fetch-Site': 'same-origin' }, { Referer: 'https://koinvault.app/' }]) {
+        assert.equal((await fetch(frontend.base + '/api/dapp/' + route + '?' + readQuery, { headers })).status, 200,
+          'Wallet browser GET without Origin must work through the proxy');
+      }
+      for (const headers of [{}, { 'Sec-Fetch-Site': 'cross-site', Referer: 'https://unlisted-developer.example/' }]) {
+        assert.equal((await fetch(frontend.base + '/api/dapp/' + route + '?' + readQuery, { headers })).status, 403);
+      }
+    }
     assert.equal((await fetch(frontend.base + '/api/dapp/challenge', { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: 'https://koinvault.app' }, body: proofBody })).status, 200);
     assert.equal((await fetch(frontend.base + '/api/dapp/challenge', { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: 'https://evil.example' }, body: proofBody })).status, 403);
     assert.equal(fs.readFileSync(path.join(data, 'funding-worker.lock'), 'utf8'), String(primary.child.pid));

@@ -54,5 +54,38 @@ function setup() {
   pollContext.DAPP = { sessionId: 'new', secret: 'new-fixture', address: 'account' };
   finish(Object.assign(new Error('gone'), { status: 404 })); await polling;
   assert.equal(pollContext.DAPP.sessionId, 'new');
+  // Real block handlers persist per wallet/device before attempting revocation.
+  const storage = new Map(), nodes = new Map(), notices = [];
+  const node = () => ({ children: [], disabled: false,
+    addEventListener(type, fn) { this[type] = fn; }, append(...items) { this.children.push(...items); },
+    replaceChildren() { this.children = []; } });
+  const blocked = vm.createContext({
+    ADDRESS: 'wallet-a', ACTIVE: true, RECOVERY: false,
+    DAPP: { sessionId: 'blocked', secret: 'fixture', address: 'wallet-a', origin: 'https://unfamiliar.example' },
+    $: id => { if (!nodes.has(id)) nodes.set(id, node()); return nodes.get(id); },
+    document: { createElement: node }, window: { addEventListener() {} },
+    localStorage: { getItem: key => storage.get(key), setItem: (key, value) => storage.set(key, value) },
+    confirm: () => true, UI: { showTab() {} }, URLSearchParams,
+    api: async () => { throw new Error('Offline'); },
+    dappSay: message => notices.push(message), stopDappPoll() {}, paintDappRequest() {},
+    saveDapp: value => { blocked.DAPP = value; },
+  });
+  vm.runInContext(source.slice(source.indexOf('  function blockedDapps()'), source.indexOf('  function parseConnect(')), blocked);
+  vm.runInContext(source.slice(source.indexOf("  $('#btn-dapp-block').addEventListener"), start), blocked);
+  await nodes.get('#btn-dapp-block').click();
+  assert.ok(blocked.DAPP, 'Offline block retains the session for server revocation retry');
+  assert.equal(vm.runInContext("isDappBlocked('https://unfamiliar.example')", blocked), true);
+  blocked.ADDRESS = 'wallet-b';
+  assert.equal(vm.runInContext("isDappBlocked('https://unfamiliar.example')", blocked), false);
+  blocked.ADDRESS = 'wallet-a';
+  assert.equal(vm.runInContext("isDappBlocked('https://unfamiliar.example')", blocked), true, 'Block survives restoring this wallet');
+  blocked.api = async () => ({ origin: 'https://unfamiliar.example' });
+  vm.runInContext(source.slice(source.indexOf('  async function connectDapp('), source.indexOf('  async function scanDapp(')), blocked);
+  await assert.rejects(vm.runInContext('connectDapp(DAPP)', blocked), /blocked this site/);
+  await nodes.get('#btn-dapp-block').click();
+  assert.equal(blocked.DAPP, null, 'Online retry revokes and clears the session');
+  const unblock = nodes.get('#dapp-blocked-list').children[0].children[1];
+  unblock.click();
+  assert.equal(vm.runInContext("isDappBlocked('https://unfamiliar.example')", blocked), false);
   console.log('✓ Wallet disconnect confirms revocation, permits retry on outages, and ignores stale disconnect/poll replies');
 })().catch(error => { console.error(error); process.exitCode = 1; });
