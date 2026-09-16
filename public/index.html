@@ -144,6 +144,24 @@
       </div>
       <p class="hint refresh-note" id="refresh-note" hidden></p>
 
+      <section id="transactions" aria-labelledby="transactions-heading">
+        <div class="section-head">
+          <h2 class="eyebrow" id="transactions-heading">Transactions</h2>
+          <button class="linkish accent" id="btn-refresh-transactions" type="button">Refresh</button>
+        </div>
+        <div class="transaction-toolbar">
+          <label for="transaction-filter">Show</label>
+          <select id="transaction-filter">
+            <option value="all">All activity</option>
+            <option value="received">Received</option>
+            <option value="sent">Sent</option>
+          </select>
+        </div>
+        <div class="list" id="transaction-list" hidden></div>
+        <p class="hint" id="transaction-note" role="status" aria-live="polite">Loading transactions…</p>
+        <button class="ghost wide" id="btn-more-transactions" type="button" hidden>Load more</button>
+      </section>
+
       <!-- WEB_ONLY_START -->
       <div class="deposit-group" id="deposit-stats" hidden>
         <div class="section-head"><span class="eyebrow">Waiting to convert</span></div>
@@ -563,6 +581,7 @@
 <script src="/js/portfolio.js"></script>
 <script src="/js/token-amounts.js"></script>
 <script src="/js/ui.js"></script>
+<script src="/js/transactions.js"></script>
 <script src="/js/app.js"></script>
 </body>
 </html>

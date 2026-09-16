@@ -1,11 +1,11 @@
 'use strict';
 
-const CACHE = 'bio-wallet-android-shell-v14';
+const CACHE = 'bio-wallet-android-shell-v15';
 const SHELL = [
   '/android/', '/android/manifest.webmanifest', '/css/wallet.css',
   '/js/client.js', '/js/app.js', '/js/passkey.js', '/js/recovery.js',
   '/js/webauthn-wire.js', '/js/qr.js', '/js/receive.js', '/js/portfolio.js', '/js/ui.js',
-  '/js/token-amounts.js',
+  '/js/token-amounts.js', '/js/transactions.js',
   '/js/vendor/qrcode-generator.js', '/assets/icon.svg', '/assets/icon-192.png', '/assets/icon-512.png',
 ];
 self.addEventListener('install', (event) => event.waitUntil((async () => {

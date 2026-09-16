@@ -47,7 +47,8 @@
     const headers = WalletClient.android ? { 'X-Wallet-Client': 'android' } : {};
     const r = await fetch(WalletClient.apiPath(path), body
       ? { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
-      : { headers, ...(path === '/api/config' ? { signal: AbortSignal.timeout(12000) } : {}) });
+      : { headers, ...(path === '/api/config' ? { signal: AbortSignal.timeout(12000) }
+        : path.startsWith('/api/transactions?') ? { signal: AbortSignal.timeout(60000) } : {}) });
     const data = await r.json().catch(() => ({}));
     if (!r.ok) { const e = new Error(data.error || 'request failed'); e.status = r.status; throw e; }
     return data;
@@ -98,6 +99,9 @@
   $('#sym').textContent = cfg.nativeSymbol || 'KOIN';
   $('#sym2').textContent = cfg.nativeSymbol || 'KOIN';
   UI.setContext({ cfg });
+  // Optional guard also tolerates an older offline shell during an update.
+  const transactionFeed = typeof Transactions !== 'undefined'
+    ? Transactions.mount({ root: $('#transactions'), api, cfg }) : null;
 
   /* Deep links from the home-screen shortcuts (?open=send, ?tab=convert):
      kept until the wallet is open, applied once, and scrubbed from the URL
@@ -331,6 +335,7 @@
       const result = await api('/api/dapp/approve', { ...pair, requestId: request.id, acknowledged: $('#dapp-ack').checked, transaction: { ...request.transaction, signatures: [blob] } });
       paintDappRequest(null, null);
       DAPP_RESULT = { pair, message: result.signedOnly ? 'Launch approved. Return to OURO to follow deployment.' : `Transaction submitted: ${result.txid}`, kind: 'ok' };
+      if (!result.signedOnly) void transactionFeed?.refresh();
       dappSay(DAPP_RESULT.message, DAPP_RESULT.kind); void paint();
     } catch (e) {
       DAPP_RESULT = { pair, message: friendly(e), kind: 'err' };
@@ -505,9 +510,11 @@
   let PAINTING = false, PAINT_AGAIN = false, PAINT_GEN = 0;
   async function paint() {
     if (!ADDRESS) return;
+    transactionFeed?.setAddress(ADDRESS);
     $('#addr').textContent = ADDRESS;
     UI.setContext({ address: ADDRESS, cfg, recovery: RECOVERY, active: ACTIVE, refresh: paint });
     if (RESUMING || document.hidden) return;
+    void transactionFeed?.refresh({ automatic: true });
     /* A request that lands mid-poll (a send just confirmed, KOIN just
        landed) is not dropped: it runs once more as soon as this one ends. */
     if (PAINTING) { PAINT_AGAIN = true; return; }
@@ -788,6 +795,7 @@
         st.appendChild(link);
       }
       $('#send-to').value = ''; $('#send-amount').value = '';
+      void transactionFeed?.refresh();
       paint();
     } catch (e) {
       say(e.name === 'NotAllowedError' ? 'Passkey prompt closed — nothing was sent' : (e.message || 'Send failed'), 'err');
@@ -862,6 +870,7 @@
     BALANCE_SATS = ''; VHP_BALANCE_SATS = ''; TOKEN_BALANCES = {};
     clearPendingKit();
     ADDRESS = null; ACTIVE = false; RECOVERY = null; CREDENTIALS = []; PENDING_BACKUP = null;
+    transactionFeed?.reset();
     /* The credential id stays remembered: it's public on-chain anyway, the
        biometric still gates every ceremony. Sign-in never creates accounts. */
     storeAddr(null);
@@ -876,7 +885,7 @@
     api,
     signPrepared,
     credentialId: () => (RECOVERY ? RECOVERY.credentialId : Passkey.storedId()),
-    onKoinMoved: paint,
+    onKoinMoved: () => { void transactionFeed?.refresh(); paint(); },
   });
 
   /* ---------------- resume ---------------- */
@@ -917,6 +926,7 @@
       if (!current()) return;
       if (e.status === 404) {
         RESUMING = null; ADDRESS = null; ACTIVE = false; CREDENTIALS = [];
+        transactionFeed?.reset();
         storeAddr(null); stopDappPoll(); UI.reset(); if (WalletClient.canBuy) Fund.forget();
         show('#view-landing');
         alertLine('Choose a saved passkey to reopen your wallet. The previous account could not be matched.');
