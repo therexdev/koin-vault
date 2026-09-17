@@ -1,23 +1,34 @@
 # Wallet transaction feed
 
-The home screen shows Transactions below Tokens on the website, installed PWA,
-and Android wallet. It loads the current wallet's Koinos account history, newest
-first. Incoming and outgoing standard token transfers, mint/burn events, node
-rewards, and other contract activity appear together. Added tokens are decoded
-using each emitting contract's symbol and decimals; adding a token to the balance
-list is not required for its standard transfer events to appear.
+Open a token on the website, installed PWA, or Android wallet to see its Activity
+below the Send/Receive buttons and contract address. The token panel omits network
+and decimals details. There is no account-wide feed or filter control.
 
-Use All activity, Received or Sent to filter the loaded entries. Load more reads
-the next 20 history records. Expand an entry for full addresses, exact amounts,
-token contract, transaction/block ID, and its explorer link. Some history records
-contain several token movements; these stay grouped under one transaction.
+Each successful token movement has Sent or Received on the left, the exact token
+amount on the right, and a small to/from address underneath when the receipt
+provides one. Node rewards and burns have small secondary labels. Mint/burn events
+do not invent a counterparty. A self transfer is Sent to the wallet's own address
+with a small Self transfer label. Dates are shown when available; tapping an entry
+opens its transaction or block on the configured explorer.
 
-The first page refreshes every 30 seconds while the wallet is visible, and after
-wallet sends, app approvals and completed conversions. Once older history is
-loaded, automatic refresh pauses for the feed to preserve the reading position;
-Refresh returns to the latest page. Signing out or changing accounts clears the
-feed and invalidates in-flight responses. History is not persisted in the browser
-or cached by either service worker.
+Activity is selected by contract address, not ticker, so KOIN, VHP, and added
+tokens stay separate even when symbols are identical. Each movement in a
+transaction becomes its own row for the relevant token. Amounts retain all digits
+and use thousands separators without floating-point conversion.
+
+History is fetched only while a token is open, newest first. Each load scans up
+to three account-history pages of 20 records to find 20 token movements, stopping
+earlier at the end of history. Load more continues from the remaining cursor,
+including when those pages contained only other tokens. Requests are bounded;
+an empty partial scan does not claim the token has no older activity.
+
+The first batch refreshes every 30 seconds while the token and wallet are visible,
+and after app approvals or completed conversions. Automatic refresh pauses after
+Load more to preserve the reading position; reopening the token loads the latest
+activity. Closing a token, switching tokens/accounts, or signing out clears the
+feed and invalidates in-flight responses. Read failures retain the previous list
+and provide a Try again button that retries the failed page batch. History is not
+persisted in the browser or cached by either service worker.
 
 ## Data and availability
 
@@ -40,14 +51,14 @@ precision. A short, bounded server cache coalesces repeated reads. RPC fallback,
 bounded metadata fan-out, and a 48-second request budget keep history independent
 of balance and signing operations.
 
-Only successful receipt events count as token movements. Reverted receipts
-appear as Failed without claiming funds moved. Confirmed means included in the
-history service's current chain; it does not claim irreversibility. Unmined or
-rejected submissions are not indexed by this feed. Standard token event formats
-are decoded; nonstandard calls remain generic activity.
+Only successful receipt events count as token movements. The API retains failed
+and generic contract records, but token feeds omit them because they contain no
+successful token movement. Inclusion in history does not claim irreversibility.
+Unmined or rejected submissions are not indexed by this feed. Nonstandard token
+event formats cannot be decoded into token activity.
 
 Transaction dates use batched transaction-store and block-store reads. If a date
-cannot be determined, the feed says Date unavailable. Missing token metadata
+cannot be determined, the feed omits the date. Missing token metadata
 shows exact raw units rather than assuming decimals. A history outage displays
 an error and preserves previously loaded activity, clearly marked. Demo mode
 does not query live history or present sample transfers as real ones.

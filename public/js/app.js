@@ -102,6 +102,14 @@
   // Optional guard also tolerates an older offline shell during an update.
   const transactionFeed = typeof Transactions !== 'undefined'
     ? Transactions.mount({ root: $('#transactions'), api, cfg }) : null;
+  UI.setContext({
+    onTokenOpen: token => {
+      transactionFeed?.setAddress(ADDRESS);
+      transactionFeed?.setToken(token);
+      void transactionFeed?.refresh();
+    },
+    onTokenClose: () => transactionFeed?.setToken(null),
+  });
 
   /* Deep links from the home-screen shortcuts (?open=send, ?tab=convert):
      kept until the wallet is open, applied once, and scrubbed from the URL

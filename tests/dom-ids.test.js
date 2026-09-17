@@ -20,7 +20,7 @@ const html = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'),
 /* Every id a script dereferences. Grouped by owner so a removal is easy to
    trace back to the code that would break. */
 const IDS = {
-  'transactions.js': ['transactions', 'transactions-heading', 'transaction-filter', 'transaction-list', 'transaction-note', 'btn-refresh-transactions', 'btn-more-transactions'],
+  'transactions.js': ['transactions', 'transactions-heading', 'transaction-list', 'transaction-note', 'btn-more-transactions'],
   'app.js (existing)': [
     'demo-note', 'sym', 'sym2', 'btn-signout', 'btn-go', 'no-passkey', 'alt-unlock',
     'phone-option', 'btn-use-phone', 'btn-phone-signin', 'btn-phone-create', 'sheet-phone', 'connection-status', 'btn-unlock-existing', 'btn-open-recover', 'btn-recover-back', 'btn-recover', 'addr',
@@ -58,7 +58,7 @@ const IDS = {
   'ui.js (token sheet)': [
     'sheet-token', 'tok-icon', 'tok-title', 'tok-sym', 'tok-name', 'tok-amount', 'tok-usd', 'tok-price',
     'tok-mana-row', 'btn-tok-receive', 'btn-tok-send', 'tok-send-note', 'tok-contract', 'tok-contract-row',
-    'tok-decimals', 'tok-network', 'tok-explorer', 'btn-tok-remove', 'btn-tok-close',
+    'tok-explorer', 'btn-tok-remove', 'btn-tok-close',
   ],
   'ui.js (send sheet)': [
     'sheet-send', 'btn-send-close', 'send-from', 'send-asset', 'send-option-koin', 'send-option-vhp', 'btn-paste', 'send-to-check', 'send-suffix', 'send-avail',

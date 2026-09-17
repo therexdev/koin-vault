@@ -62,6 +62,11 @@ const listen = async server => { server.listen(0, '127.0.0.1'); await once(serve
         assert.equal((await fetch(base + prefix + '/api/transactions?address=' + address, { method: 'POST' })).status, 404);
         const html = await (await fetch(base + (prefix || '') + '/')).text();
         assert.ok(html.includes('id="transactions"')); assert.ok(html.includes('/js/transactions.js'));
+        const tokenSheet = html.slice(html.indexOf('id="sheet-token"'), html.indexOf('id="sheet-send"'));
+        assert.ok(tokenSheet.includes('id="transactions"'), 'Activity belongs inside the token sheet');
+        assert.ok(tokenSheet.indexOf('id="tok-contract"') < tokenSheet.indexOf('id="transactions"'));
+        assert.ok(!html.includes('id="transaction-filter"'));
+        assert.ok(!tokenSheet.includes('id="tok-decimals"')); assert.ok(!tokenSheet.includes('id="tok-network"'));
       }
       if (demo) assert.equal(historyCalls, before, 'Demo cannot access live history');
     } finally {
