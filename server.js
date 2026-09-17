@@ -108,6 +108,7 @@ let dappReservedMana = 0n;
 let DEMO = CFG.demo;
 let BOOTING = true;
 let BOOT_ERROR = false;
+let BOOT_WAITING = false;
 const forwardWallet = CFG.backendUrl && CFG.backendUrl !== 'local'
   ? walletBackend.createProxy({ backendUrl: CFG.backendUrl, publicUrl: CFG.publicUrl || 'https://wallet.usekoinos.com',
       rpId: CFG.passkeyRpId, secret: CFG.sponsorWif, clientIp,
@@ -1190,7 +1191,12 @@ const server = http.createServer(async (req, res) => {
       }
       if (BOOTING) {
         res.writeHead(503, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Retry-After': '3' });
-        return res.end(JSON.stringify({ error: BOOT_ERROR ? 'Wallet startup failed. Check the application runtime log.' : 'Wallet is starting. Please reload in a few seconds.' }));
+        return res.end(JSON.stringify({
+          code: BOOT_ERROR ? 'WALLET_STARTUP_FAILED' : BOOT_WAITING ? 'WALLET_RESTART_PENDING' : 'WALLET_STARTING',
+          error: BOOT_ERROR ? 'Wallet startup failed. Check the application runtime log.'
+            : BOOT_WAITING ? 'Wallet is restarting. Waiting for the previous process to stop.'
+              : 'Wallet is starting. Please reload in a few seconds.',
+        }));
       }
       res.setHeader('Content-Type', 'application/json');
       res.setHeader('Cache-Control', 'no-store');
@@ -1231,6 +1237,11 @@ const server = http.createServer(async (req, res) => {
 
 /* ---------------- boot ---------------- */
 
+// Exit synchronously so funding's exit hook can release our own lock. Never
+// release it while this process can still run funding work or serve requests.
+process.once('SIGTERM', () => process.exit(143));
+process.once('SIGINT', () => process.exit(130));
+
 // Bind before any external RPC waits. Hosting must be able to reach the
 // process during startup; API handlers stay gated until stores are ready.
 server.listen(CFG.port, () => {
@@ -1252,6 +1263,32 @@ function applyMode() {
     const solRail = funding._solRail();
     console.log(`funding:  SOL→KOIN ${!solRail.enabled ? 'OFF — ' + solRail.reason : fundingDemo ? 'demo' : 'LIVE (Jupiter + Wormhole + Vortex)'}`);
   }).catch(() => {});
+}
+
+function failStartup(e) {
+  BOOT_WAITING = false;
+  BOOT_ERROR = true;
+  console.error('Wallet initialization failed:', e.message);
+}
+
+function startWalletStores() {
+  try {
+    applyMode();
+    BOOT_WAITING = false;
+    BOOTING = false;
+    console.log(`passkey:  rpId = ${CFG.passkeyRpId || '(page hostname)'}`);
+    console.log(`ready:    ${DEMO ? 'demo mode' : 'live'}`);
+  } catch (e) {
+    // A rolling restart may overlap the previous worker. Keep every API
+    // gated and retry acquisition; never bypass a live lock or open stores.
+    if (e.code !== 'FUNDING_WORKER_BUSY') return failStartup(e);
+    if (!BOOT_WAITING) {
+      console.warn(`Wallet startup waiting: ${e.message} (PID ${e.ownerPid}). Retrying every 3 seconds.`);
+    }
+    BOOT_WAITING = true;
+    const retry = setTimeout(startWalletStores, 3000);
+    retry.unref();
+  }
 }
 
 (async () => {
@@ -1285,12 +1322,5 @@ function applyMode() {
     console.log('WARNING:  ' + w);
   }
 
-  applyMode();
-  BOOTING = false;
-
-  console.log(`passkey:  rpId = ${CFG.passkeyRpId || '(page hostname)'}`);
-  console.log(`ready:    ${DEMO ? 'demo mode' : 'live'}`);
-})().catch(e => {
-  BOOT_ERROR = true;
-  console.error('Wallet initialization failed:', e.message);
-});
+  startWalletStores();
+})().catch(failStartup);

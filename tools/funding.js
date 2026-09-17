@@ -174,7 +174,12 @@ function lockDataDirectory() {
     if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error("The funding worker lock needs operator inspection");
     let alive = true;
     try { process.kill(pid, 0); } catch (err) { if (err.code === "ESRCH") alive = false; }
-    if (alive) throw new Error("Another funding worker owns this data directory; run only one wallet process per data directory");
+    if (alive) {
+      const busy = new Error("Another funding worker owns this data directory; run only one wallet process per data directory");
+      busy.code = "FUNDING_WORKER_BUSY";
+      busy.ownerPid = pid;
+      throw busy;
+    }
     if (fs.statSync(lock).ino !== stat.ino) throw new Error("The funding worker lock changed; retry startup");
     fs.unlinkSync(lock);
     lockDataDirectory();
