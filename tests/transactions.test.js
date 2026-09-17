@@ -3,10 +3,11 @@ const assert = require('node:assert/strict');
 const { Serializer, Signer, utils } = require('koilib');
 const { createHistoryService, PAGE_SIZE } = require('../tools/transaction-history');
 const { NETWORKS } = require('../tools/rpc');
-const { createController, amount } = require('../public/js/transactions');
+const { createController, amount, movementRows } = require('../public/js/transactions');
 const A = Signer.fromSeed('history-owner').getAddress(), B = Signer.fromSeed('history-recipient').getAddress();
 const CUSTOM = Signer.fromSeed('history-custom-token').getAddress();
 const { koinContract: KOIN, vhpContract: VHP } = NETWORKS.mainnet;
+const koinToken = { id: 'koin', address: KOIN }, vhpToken = { id: 'vhp', address: VHP };
 const id = n => '0x1220' + n.toString(16).padStart(64, '0');
 const abi = structuredClone(require('../abi/token-abi.json'));
 delete abi.koilib_types.nested.koinos.nested.btype;
@@ -70,28 +71,71 @@ const tx = (n, events, extra = {}) => ({ seq_num: String(n), trx: { transaction:
   const unknown = (await missingMeta.get(A)).items[0];
   assert.equal(unknown.timestamp, null); assert.equal(unknown.movements[0].amount, null);
   assert.equal(unknown.movements[0].units, '9007199254740993');
-  assert.equal(amount(unknown.movements[0]), '+9007199254740993 raw units');
+  assert.equal(amount(unknown.movements[0]), '9,007,199,254,740,993 raw units');
+  assert.equal(amount(page.items[1].movements[0]), '184,467,440,737.09551615 VHP');
   const zero = createHistoryService({ network: 'mainnet', urls: ['up'], call: async (_, method) => method === 'account_history.get_account_history'
     ? { values: [{ ...tx(0, []), seq_num: undefined }] } : {} });
   assert.equal((await zero.get(A)).items[0].sequence, '0'); assert.equal((await zero.get(A)).nextCursor, null);
   console.log('✓ Outages stay errors; missing metadata and timestamps are never invented; sequence zero works');
 
+  const koinRows = movementRows(page.items, koinToken), vhpRows = movementRows(page.items, vhpToken);
+  assert.deepEqual(koinRows.map(row => row.label), ['Received', 'Sent', 'Received']);
+  assert.equal(koinRows[0].peer, B); assert.equal(koinRows[0].prefix, 'from');
+  assert.equal(koinRows[1].peer, A); assert.equal(koinRows[1].note, 'Self transfer');
+  assert.equal(koinRows[2].note, 'Node reward'); assert.equal(koinRows[2].peer, null, 'Mint has no invented sender');
+  assert.deepEqual(vhpRows.map(row => row.label), ['Sent', 'Sent']);
+  assert.equal(vhpRows[0].prefix, 'to'); assert.equal(vhpRows[0].peer, B);
+  assert.equal(vhpRows[1].note, 'Node burn'); assert.equal(vhpRows[1].peer, null, 'Burn has no invented recipient');
+  assert.equal(movementRows(page.items, { address: CUSTOM }).length, 1);
+  assert.deepEqual(movementRows(page.items, null), []);
+  const impersonator = { ...page.items[0], movements: [{ ...page.items[0].movements[0], contract: CUSTOM, symbol: 'KOIN' }] };
+  assert.deepEqual(movementRows([impersonator], koinToken), [], 'Contract identity, not symbol, selects a token');
+
   let resolveOld;
   const controller = createController({ network: 'mainnet', api: () => new Promise(resolve => { resolveOld = resolve; }) });
-  controller.setAddress(A);
+  controller.setAddress(A); await controller.refresh();
+  assert.equal(resolveOld, undefined, 'History is not fetched until a token opens');
+  controller.setToken(koinToken);
   const oldRequest = controller.refresh(); controller.reset(); controller.setAddress(B);
   resolveOld(page); await oldRequest;
   assert.equal(controller.getState().address, B); assert.deepEqual(controller.getState().items, []);
+  controller.setAddress(A); controller.setToken(koinToken);
+  const switched = controller.refresh(); controller.setToken(vhpToken);
+  resolveOld(page); await switched;
+  assert.equal(controller.getState().token.address, VHP); assert.deepEqual(controller.getState().items, [], 'Late responses cannot paint another token');
+  const closed = controller.refresh(); controller.setToken(null); resolveOld(page); await closed;
+  assert.deepEqual(controller.getState().items, [], 'Closing a token invalidates its pending response');
+
   let apiCalls = 0, fail = false;
+  const firstItems = Array.from({ length: 20 }, (_, i) => ({ ...page.items[0], key: 'first-' + i }));
   const feed = createController({ network: 'mainnet', now: () => 100000, api: async path => {
     apiCalls++; if (fail) throw new Error('offline');
-    return { ...page, items: path.includes('cursor=') ? [page.items[0], { ...page.items[1], key: 'older' }] : [page.items[0]] };
+    return { ...page, items: path.includes('cursor=') ? [firstItems[0], { ...page.items[0], key: 'older' }] : firstItems,
+      nextCursor: path.includes('cursor=') ? null : '5' };
   } });
-  feed.setAddress(A); await feed.refresh(); await feed.refresh({ more: true });
-  assert.equal(feed.getState().items.length, 2, 'Overlapping pages are deduplicated');
-  await feed.refresh({ automatic: true }); assert.equal(apiCalls, 2, 'Automatic updates leave expanded history in place');
+  feed.setAddress(A); feed.setToken(koinToken); await feed.refresh();
+  fail = true; await feed.refresh({ more: true });
+  assert.equal(feed.getState().retryMore, true); assert.equal(feed.getState().cursor, '5');
+  fail = false; await feed.refresh({ more: true });
+  assert.equal(feed.getState().items.length, 21, 'Overlapping pages are deduplicated');
+  await feed.refresh({ automatic: true }); assert.equal(apiCalls, 3, 'Automatic updates leave expanded history in place');
   fail = true; await feed.refresh();
-  assert.equal(feed.getState().items.length, 2); assert.match(feed.getState().error, /Could not refresh/);
-  fail = false; await feed.refresh(); assert.equal(feed.getState().items.length, 1);
-  console.log('✓ Account-switch race, pagination deduplication, stable expanded history and stale/error recovery');
+  assert.equal(feed.getState().items.length, 21); assert.match(feed.getState().error, /Could not load/);
+  fail = false; await feed.refresh(); assert.equal(feed.getState().items.length, 20);
+
+  const scans = [];
+  const sparse = createController({ network: 'mainnet', api: async url => {
+    const cursor = new URL(url, 'http://localhost').searchParams.get('cursor'); scans.push(cursor);
+    return { ...page, items: cursor === '20' ? [page.items[0]] : [page.items[1]],
+      nextCursor: cursor == null ? '60' : cursor === '60' ? '40' : cursor === '40' ? '20' : null };
+  } });
+  sparse.setAddress(A); sparse.setToken(koinToken); await sparse.refresh();
+  assert.deepEqual(scans, [null, '60', '40'], 'Sparse activity searches a bounded batch of account pages');
+  assert.equal(sparse.getState().cursor, '20'); assert.deepEqual(sparse.getState().items, []);
+  await sparse.refresh({ more: true }); assert.equal(sparse.getState().items.length, 1);
+  assert.equal(sparse.getState().cursor, null);
+  const stalled = createController({ network: 'mainnet', api: async () => ({ ...page, items: [], nextCursor: '5' }) });
+  stalled.setAddress(A); stalled.setToken(koinToken); await stalled.refresh();
+  assert.match(stalled.getState().error, /Could not load/, 'A stuck cursor cannot loop or masquerade as an empty feed');
+  console.log('✓ Token isolation, Sent/Received rows, rewards/burns, account/token/close races, bounded sparse pagination, deduplication and retry');
 })().catch(error => { console.error(error); process.exitCode = 1; });

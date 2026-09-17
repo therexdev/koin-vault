@@ -239,7 +239,7 @@ const UI = (() => {
     }
   }
   function onSheetClose(id, opts = {}) {
-    if (id === 'sheet-token') tokenOpen = null;
+    if (id === 'sheet-token') { tokenOpen = null; CTX.onTokenClose?.(); }
     if (id === 'sheet-install') {
       if (opts.dismissed) snoozeInstall();
       else if (!opts.completed && !installation.installed) {
@@ -298,7 +298,6 @@ const UI = (() => {
       syncSendAssets();
       renderSendSummary();
       const s2 = byId('recv-suffix'); if (s2) s2.textContent = sym();
-      const tn = byId('tok-network'); if (tn) tn.textContent = netLabel();
     }
     if (patch && ('recovery' in patch || 'active' in patch)) paintSigner();
   }
@@ -501,6 +500,7 @@ const UI = (() => {
     tokenOpen = r;
     fillToken(r);
     openSheet('sheet-token');
+    CTX.onTokenOpen?.(r);
   }
   function fillToken(r) {
     tokenOpen = r;
@@ -537,8 +537,6 @@ const UI = (() => {
     const cr = byId('tok-contract-row'), cb = byId('tok-contract');
     if (r.address) { cr.hidden = false; cb.textContent = shortAddr(r.address); cb.dataset.full = r.address; }
     else { cr.hidden = true; cb.textContent = ''; delete cb.dataset.full; }
-    byId('tok-decimals').textContent = r.decimals != null ? String(r.decimals) : '—';
-    byId('tok-network').textContent = netLabel();
     const ex = byId('tok-explorer');
     const href = explorerAddr(r.address);
     ex.hidden = !href; if (href) ex.href = href;
