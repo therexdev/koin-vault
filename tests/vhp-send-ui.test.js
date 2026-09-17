@@ -13,6 +13,7 @@ function node(id) {
   return nodes.get(id);
 }
 const context = vm.createContext({
+  transactionFeed: null,
   TokenAmounts: require('../public/js/token-amounts'), TOKEN_BALANCES: {},
   byId: node, $: selector => node(selector.slice(1)),
   CTX: { cfg: { sendAssets: ['koin', 'vhp'] }, model: {

@@ -23,6 +23,7 @@ function node(id) {
 }
 const row = { id: token, address: token, symbol: 'KCT', decimals: 6, amountText: '9,007,199,254.740993', sats: '9007199254740993' };
 const ctx = vm.createContext({
+  transactionFeed: null,
   cfg: { network: 'mainnet' },
   byId: node, $: selector => node(selector.slice(1)), el: (_tag, _class, text) => element(text),
   shortAddr: value => value.slice(0, 6) + '…' + value.slice(-4),

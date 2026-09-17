@@ -20,6 +20,7 @@ function open(storage = saved(), options = {}) {
     return nodes.get(id);
   };
   const context = vm.createContext({
+    transactionFeed: null,
     LS_ADDR: 'bw_smart_addr', ADDRESS: null, ACTIVE: false, RECOVERY: null, RESUMING: null,
     CREDENTIALS: [], PENDING_BACKUP: null, POLL: null, DAPP: null,
     PAINT_GEN: 0, PAINTING: false, PAINT_AGAIN: false, BALANCE_SATS: '', VHP_BALANCE_SATS: '', TOKEN_BALANCES: {},

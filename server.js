@@ -40,6 +40,7 @@ const dappPolicy = require('./tools/dapp-policy');
 const dappReview = require('./tools/dapp-review');
 const { isDeepStrictEqual } = require('node:util');
 const { createPrices } = require('./tools/prices');
+const { createHistoryService } = require('./tools/transaction-history');
 const ethSwap = require('./tools/eth/eth-swap');
 const { makeProvider: makeEthProvider } = require('./tools/eth/eth-bridge');
 
@@ -121,6 +122,7 @@ const prices = createPrices({
    chain supplies name/symbol/decimals. The client may add its own on top. */
 const WALLET_TOKENS = String(process.env.WALLET_TOKENS || '').split(',').map(t => t.trim()).filter(Boolean);
 const MAX_CLIENT_TOKENS = 12;
+const transactionHistory = createHistoryService({ network: CFG.network });
 let BOOT_NOTE = '';
 const WARNINGS = [];
 
@@ -601,6 +603,14 @@ const fromSats = (sats, decimals) => {
   const base = 10n ** d;
   const whole = s / base, frac = String(s % base).padStart(Number(d), '0').replace(/0+$/, '');
   return frac ? `${whole}.${frac}` : String(whole);
+};
+
+api.transactions = async (params) => {
+  const address = params.get('address');
+  if (!chain.isAddr(address)) throw httpError(400, 'a valid Koinos address is required');
+  // Demo accounts never read or display real chain history.
+  if (DEMO) return { ok: true, demo: true, address, network: CFG.network, items: [], nextCursor: null };
+  return transactionHistory.get(address, params.get('cursor'));
 };
 
 api.portfolio = async (params) => {
@@ -1137,6 +1147,7 @@ function readBody(req, maxBytes = 64 * 1024) {
 
 const GET_ROUTES = {
   '/api/config': api.config, '/api/account': api.account, '/api/portfolio': api.portfolio,
+  '/api/transactions': api.transactions,
   '/api/account-status': api.accountStatus, '/api/health': api.health,
   '/api/fund/status': api.fundStatus, '/api/diagnose': api.diagnose,
   '/api/dapp/status': api.dappStatus, '/api/dapp/pending': api.dappPending,
