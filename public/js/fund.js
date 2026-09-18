@@ -60,17 +60,35 @@ const Fund = (() => {
     S: { sol_swap: 'Swapping SOL → vKOIN on Solana (Jupiter)…', sol_bridge: 'Sending vKOIN across Wormhole to Ethereum…', wh_redeem: 'Receiving the vKOIN on Ethereum…' },
     T: { sol_swap: 'Swapping SOL → ETH on Solana (Jupiter)…', sol_bridge: 'Sending ETH across Wormhole to Ethereum…', wh_redeem: 'Receiving your ETH on Ethereum…' },
   };
-  const stepLabel = (j) => (SOL_STEPS[j.route] && SOL_STEPS[j.route][j.status]) || STEP_LABEL[j.status] || j.status;
+  const stepLabel = (j) => j.status === 'awaiting_signatures' && j.guardianQuorum
+    ? `Waiting for Vortex signatures (${j.guardianSignatures || 0} of ${j.guardianQuorum})…`
+    : (SOL_STEPS[j.route] && SOL_STEPS[j.route][j.status]) || STEP_LABEL[j.status] || j.status;
 
   const needsTap = (j) => j.status === 'awaiting_redeem' && !!j.needsTap;
 
   /* Job states where the funds sit in the bridge rather than at the deposit
      address — nothing shows in the token balances, so say it explicitly. */
-  const IN_BRIDGE = new Set(['awaiting_signatures', 'awaiting_redeem', 'awaiting_swap', 'awaiting_vaa', 'wh_redeem']);
+  const IN_BRIDGE = new Set(['awaiting_signatures', 'request_signatures', 'awaiting_redeem', 'awaiting_vaa', 'wh_redeem']);
   /* Gas being fronted right before the Wormhole redeem is the same state
      for the money: it is in Wormhole, not at either address. */
   const inBridgeState = (j) => !!j && (IN_BRIDGE.has(j.status) || (j.status === 'front_gas' && j.afterGas === 'wh_redeem'));
   const bridgeName = (j) => (j && (j.status === 'awaiting_vaa' || j.status === 'wh_redeem' || j.afterGas === 'wh_redeem') ? 'Wormhole' : 'Vortex');
+
+  function bridgeNotice(job) {
+    if (!job) return '';
+    const j = job.status === 'error' ? { ...job, status: job.failedAt } : job;
+    if (j.status === 'awaiting_swap') {
+      return '<span class="fund-inflight">vETH has arrived on your account — confirm the final swap to KOIN</span>';
+    }
+    if (!inBridgeState(j)) return '';
+    // Route B's record is vETH, not KOIN. Only the later KoinDX swap
+    // converts that amount into the estimated KOIN shown with the quote.
+    const amount = j.recordAmount
+      ? `${koin(j.recordAmount)} ${j.route === 'B' ? 'vETH' : 'KOIN'}`
+      : j.estKoinOut ? `≈ ${koin(j.estKoinOut)} KOIN estimated` : '';
+    return `<span class="fund-inflight">in the ${bridgeName(j)} bridge${amount ? ` <strong>${amount}</strong>` : ''}`
+      + ' — waiting to land on your account</span>';
+  }
 
   const SYM = { eth: 'ETH', usdc: 'USDC', usdt: 'USDT', sol: 'SOL' };
   const CHAIN = { eth: 'Ethereum', usdc: 'Ethereum', usdt: 'Ethereum', sol: 'Solana' };
@@ -427,13 +445,8 @@ const Fund = (() => {
        still yours — it is locked in the bridge against a guardian-signed
        record. Showing nothing for it reads as "it vanished", which is the
        one thing it has not done. */
-    const inFlight = st.job;
-    const inBridge = inBridgeState(inFlight)
-      ? (inFlight.recordAmount || inFlight.estKoinOut) : null;
-    if (inBridge) {
-      strip.push(`<span class="fund-inflight">in the ${bridgeName(inFlight)} bridge <strong>${koin(inBridge)} KOIN</strong>`
-        + ' — waiting to land on your account</span>');
-    }
+    const notice = bridgeNotice(st.job);
+    if (notice) strip.push(notice);
     $('#fund-balances').innerHTML = strip.join('<span class="fund-dot">·</span>');
 
     /* Swaps need a live on-chain account; the address and balances don't. */
@@ -528,7 +541,8 @@ const Fund = (() => {
          the money actually is, so it is safe on a step that is merely slow. */
       const stuck = j.status === 'error' || !!j.stalled;
       $('#btn-fund-retry').hidden = !stuck;
-      $('#btn-fund-reset').hidden = !['done', 'error'].includes(j.status);
+      $('#btn-fund-reset').hidden = !['done', 'error'].includes(j.status)
+        || (j.status !== 'done' && !!j.ethTxHash);
       opt('#fund-job .btn-row', (n) => { n.hidden = !(tap || stuck || j.status === 'done'); });
       $('#fund-job').className = 'status' + (j.status === 'done' ? ' ok' : j.status === 'error' ? ' err' : j.stalled ? ' warn' : '');
       /* The reason, when the server has one — a swallowed retry loop or a

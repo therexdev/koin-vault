@@ -25,6 +25,7 @@ const FAKE_OP = { call_contract: { contract_id: "bridge", entry_point: 1, args: 
 require.cache[BRIDGE].exports = {
   ...require.cache[BRIDGE].exports,
   opCompleteTransfer: async () => FAKE_OP,
+  readValidatorCount: async () => 3,
 };
 
 const chain = require("../tools/chain");

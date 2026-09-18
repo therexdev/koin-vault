@@ -14,6 +14,18 @@ const { Contract } = require("koilib");
 const BRIDGE_ABI = require("./abi/koinos-bridge-abi.json");
 const { BRIDGE } = require("./bridge-constants");
 
+// The proxy's record.validators lists only guardians who have signed THIS
+// transfer. Quorum is based on the full validator set on the receiving chain.
+async function readValidatorCount({ network = "mainnet", provider } = {}) {
+  const cfg = BRIDGE[network];
+  if (!cfg || !cfg.koinosBridge) throw new Error(`Bridge not configured for ${network}`);
+  const bridge = new Contract({ id: cfg.koinosBridge, abi: BRIDGE_ABI, provider });
+  const { result } = await bridge.functions.get_metadata({});
+  const count = Number(result && result.nbValidators);
+  if (!Number.isSafeInteger(count) || count <= 0) throw new Error("Could not read the bridge validator count");
+  return count;
+}
+
 // Mana ceiling for a smart-account redeem: complete_transfer plus the
 // account's on-chain WebAuthn verification.
 const DEFAULT_REDEEM_RC = "2000000000";
@@ -51,4 +63,4 @@ async function opCompleteTransfer({ record, network = "mainnet", provider } = {}
   return operation;
 }
 
-module.exports = { recordToRedeemArgs, opCompleteTransfer, BRIDGE_ABI, DEFAULT_REDEEM_RC };
+module.exports = { recordToRedeemArgs, opCompleteTransfer, readValidatorCount, BRIDGE_ABI, DEFAULT_REDEEM_RC };
