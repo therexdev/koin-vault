@@ -22,6 +22,26 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
   configContext.api = async () => ({ ok: true, demo: true });
   assert.equal((await vm.runInContext('waitForConfig()', configContext)).demo, true, 'An explicitly configured demo remains supported');
 
+  // Exercise the real API error decoder and boot display together. Runtime
+  // details are never copied to the page, and neither error unlocks sign-in.
+  configContext.WalletClient = { android: false, apiPath: value => value };
+  configContext.AbortSignal = AbortSignal;
+  vm.runInContext(source.slice(source.indexOf('  async function api('), source.indexOf('  /* ---------------- boot')), configContext);
+  for (const [code, message] of [
+    ['WALLET_RESTART_PENDING', /Wallet is restarting/],
+    ['WALLET_STARTUP_FAILED', /server could not start/],
+  ]) {
+    configContext.fetch = async () => ({ ok: false, status: 503, json: async () => ({ code, error: 'private runtime details' }) });
+    let unlocked = false;
+    const waiting = vm.runInContext('waitForConfig()', configContext).then(value => { unlocked = true; return value; });
+    await tick();
+    assert.equal(unlocked, false); assert.equal(status.hidden, false);
+    assert.match(status.textContent, message); assert.doesNotMatch(status.textContent, /private runtime/);
+    configContext.fetch = async () => ({ ok: true, json: async () => ({ ok: true, demo: false }) });
+    delays.shift()(); await waiting;
+    assert.equal(status.hidden, true);
+  }
+
   const elements = new Map(), calls = [], identified = [], addresses = [];
   let failLookup = false, remembered = true, creations = 0, local = true, capable = true;
   let creationError = null, signInCancelled = false, selectedCredential = 'original-credential', holdCreation = null;

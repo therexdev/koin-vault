@@ -41,6 +41,34 @@ Sponsorship requires fresh RPC verification of the account's bytecode hash,
 authorization flags, standard modules and signed nonce. Modified accounts or
 unavailable metadata reads do not qualify; standard pairing still works.
 
+## Funding worker lock during restart
+
+`Another funding worker owns this data directory` means the PID recorded in
+`DATA_DIR/funding-worker.lock` still appears alive. The new process keeps wallet
+APIs unavailable and retries every three seconds until it can claim the lock.
+It does not open account records or run funding jobs while waiting. Normal
+SIGTERM/SIGINT shutdown removes the exiting process's own lock; a dead PID left
+after a hard crash is reclaimed at the next startup attempt.
+
+If this persists on Hostinger, fully stop the previous Koin Vault Node.js
+process, then start one instance against the **same existing `DATA_DIR`**.
+Configure the host to stop the old worker before starting its replacement;
+a deployment that waits for the new worker to become healthy before stopping
+the old one cannot complete this handoff. Do not point an existing wallet at
+an empty directory to clear this error.
+
+Never delete a live worker's lock. If the recorded PID was reused by an unrelated
+process or the lock was copied from a different host, stop all wallet processes
+using this directory and verify there is no funding worker before removing only
+`funding-worker.lock`. Preserve `accounts.json`, `funding.json`, and the rest of
+the persistent data. This is a single-host PID lock, not a distributed lock;
+do not share the directory across hosts or separate PID namespaces.
+
+After recovery, verify `/api/health` returns `ok:true`, `demo:false`, and
+`network:mainnet`, then confirm existing Vault sign-in works. Other startup
+failures remain blocked with `WALLET_STARTUP_FAILED`; inspect the runtime log
+instead of replacing a ledger or switching to demo mode.
+
 ## Existing accounts
 
 An empty account store can discover registered credentials through the on-chain

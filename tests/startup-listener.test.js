@@ -31,11 +31,11 @@ const { Signer } = require('koilib');
   fs.writeFileSync(path.join(data, 'funding.json'), '{}');
   const saved = fs.readFileSync(path.join(data, 'accounts.json'));
   const children = [];
-  async function start(backendUrl = 'local') {
+  async function start(backendUrl = 'local', dataDir = data) {
     const portServer = http.createServer(); portServer.listen(0, '127.0.0.1'); await once(portServer, 'listening');
     const port = portServer.address().port; await new Promise(r => portServer.close(r));
     const child = spawn(process.execPath, ['--require', preload, 'server.js'], {
-      cwd: root, env: { PATH: process.env.PATH, PORT: String(port), DATA_DIR: data,
+      cwd: root, env: { PATH: process.env.PATH, PORT: String(port), DATA_DIR: dataDir,
         ...(backendUrl === 'local' ? {} : { WALLET_BACKEND_URL: backendUrl }), KOINOS_NETWORK: 'mainnet', DEMO_MODE: '0',
         PUBLIC_URL: backendUrl === 'local' ? 'https://wallet.usekoinos.com' : 'https://koinvault.app',
         PASSKEY_RPID: backendUrl === 'local' ? 'wallet.usekoinos.com' : 'koinvault.app',
@@ -51,6 +51,17 @@ const { Signer } = require('koilib');
       await new Promise(r => setTimeout(r, 40));
     }
     throw new Error('HTTP did not start: ' + logs);
+  }
+  async function stop(child, signal = 'SIGTERM') {
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    const exited = once(child, 'exit'); child.kill(signal); await exited;
+  }
+  async function waitUntilReady(server) {
+    for (let i = 0; i < 100; i++) {
+      if ((await fetch(server.base + '/api/health')).status === 200) return;
+      await new Promise(r => setTimeout(r, 80));
+    }
+    throw new Error('Wallet did not recover: ' + server.logs());
   }
   try {
     const primary = await start();
@@ -113,17 +124,48 @@ const { Signer } = require('koilib');
     const second = await start();
     const blocked = await fetch(second.base + '/api/health');
     assert.equal(blocked.status, 503);
-    assert.match((await blocked.json()).error, /startup failed/i);
+    assert.equal((await blocked.json()).code, 'WALLET_RESTART_PENDING');
     assert.match(second.logs(), /Another funding worker/);
+    await new Promise(r => setTimeout(r, 3300));
+    assert.equal((await fetch(second.base + '/api/config')).status, 503, 'Retries must not bypass a live owner');
     assert.equal(fs.readFileSync(path.join(data, 'funding-worker.lock'), 'utf8'), String(primary.child.pid));
     assert.deepEqual(fs.readFileSync(path.join(data, 'accounts.json')), saved);
     assert.equal((await fetch(primary.base + '/api/health')).status, 200);
-    console.log('✓ Live startup survives stalled RPC and ETH checks; a second worker cannot replace the lock or account records');
+    await stop(second.child);
+    assert.equal(fs.readFileSync(path.join(data, 'funding-worker.lock'), 'utf8'), String(primary.child.pid), 'Stopping a waiter must not remove the owner lock');
+
+    const replacement = await start();
+    assert.equal((await fetch(replacement.base + '/api/health')).status, 503);
+    await stop(primary.child);
+    assert.equal(fs.existsSync(path.join(data, 'funding-worker.lock')), false, 'SIGTERM releases the exiting worker lock');
+    await waitUntilReady(replacement);
+    assert.equal(fs.readFileSync(path.join(data, 'funding-worker.lock'), 'utf8'), String(replacement.child.pid));
+    const restored = await fetch(replacement.base + '/api/whoami', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ credentialId }) });
+    assert.equal((await restored.json()).address, account, 'Restart loads the original account');
+    assert.deepEqual(fs.readFileSync(path.join(data, 'accounts.json')), saved);
+    assert.equal(fs.readFileSync(path.join(data, 'funding.json'), 'utf8'), '{}', 'Waiting and restarting preserve the funding ledger');
+    console.log('✓ Restart waits for a live worker, preserves both stores, and recovers automatically after the owner exits');
+
+    await stop(replacement.child, 'SIGKILL');
+    assert.equal(fs.readFileSync(path.join(data, 'funding-worker.lock'), 'utf8'), String(replacement.child.pid));
+    const afterCrash = await start();
+    assert.equal((await fetch(afterCrash.base + '/api/health')).status, 200, 'A dead owner lock is recovered after a hard crash');
+    assert.equal(fs.readFileSync(path.join(data, 'funding-worker.lock'), 'utf8'), String(afterCrash.child.pid));
+    await stop(afterCrash.child, 'SIGINT');
+    assert.equal(fs.existsSync(path.join(data, 'funding-worker.lock')), false, 'SIGINT also releases the exiting worker lock');
+
+    const brokenData = path.join(dir, 'broken'); fs.mkdirSync(brokenData);
+    fs.writeFileSync(path.join(brokenData, 'funding.json'), '{broken');
+    const broken = await start('local', brokenData);
+    const failed = await fetch(broken.base + '/api/config');
+    assert.equal(failed.status, 503);
+    assert.equal((await failed.json()).code, 'WALLET_STARTUP_FAILED');
+    assert.match(broken.logs(), /funding ledger could not be read/);
+    assert.doesNotMatch(broken.logs(), /Wallet startup waiting/);
+    assert.equal(fs.readFileSync(path.join(brokenData, 'funding.json'), 'utf8'), '{broken');
+    console.log('✓ Signal cleanup and dead-owner recovery work; unreadable ledgers remain a fatal startup error');
   } finally {
-    await Promise.all(children.map(async child => {
-      if (child.exitCode !== null || child.signalCode !== null) return;
-      const exited = once(child, 'exit'); child.kill(); await exited;
-    }));
+    await Promise.all(children.map(child => stop(child)));
     fs.rmSync(dir, { recursive: true, force: true });
   }
 })().catch(e => { console.error(e); process.exitCode = 1; });
