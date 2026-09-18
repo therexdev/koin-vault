@@ -576,9 +576,13 @@ function executor({ ctx, S, cfg, locked, walletFor, sponsorFor, save, capacity }
     return locked(async () => {
       const j = ctx.job(account);
       if (!j || j.status !== "error") throw new Error("The conversion is still in progress; its recorded transaction will be reconciled automatically");
-      const status = j.pendingEth?.state || j.confirmedEth?.state || j.failedAt;
+      let status = j.pendingEth?.state || j.confirmedEth?.state || j.failedAt;
       if (!status) throw new Error("This conversion needs reconciliation before retrying");
-      return save(account, { ...j, status, failedAt: null, error: null, lastError: null, transientCount: 0 });
+      // Re-fetch signatures for the original deposit; never reuse the record
+      // that the bridge just rejected or replay its Ethereum deposit.
+      if (status === "awaiting_redeem") status = "awaiting_signatures";
+      return save(account, { ...j, status, failedAt: null, error: null, lastError: null, transientCount: 0,
+        ...(status === "awaiting_signatures" ? { needsTap: false, record: null, redeemAttempts: 0, sigStartedAt: Date.now() } : {}) });
     });
   }
   return { advance, resume, finish, send, confirmed, assertCapacity: async (j) => {

@@ -58,8 +58,8 @@ const swap = require("./eth/eth-swap-exec");
 const { makeProvider } = require("./eth/eth-bridge");
 const ethBridge = require("./eth/eth-bridge");
 const { buildTransferTokensTx, bridgePaused } = require("./eth/eth-bridge-token");
-const { fetchEthDepositRecord, isRedeemable, weiToVethSats } = require("./eth/bridge");
-const { opCompleteTransfer, DEFAULT_REDEEM_RC } = require("./eth/koinos-bridge");
+const { fetchEthDepositRecord, isRedeemable, computeQuorum, weiToVethSats } = require("./eth/bridge");
+const { opCompleteTransfer, readValidatorCount, DEFAULT_REDEEM_RC } = require("./eth/koinos-bridge");
 const koindx = require("./eth/koindx");
 const U = require("./eth/units");
 const fees = require("./eth/fees");
@@ -822,6 +822,9 @@ async function resume(account) {
 function reset(account) {
   const j = job(account);
   if (j && !TERMINAL.has(j.status)) throw new Error("A swap is still in progress");
+  if (j && j.status !== "done" && j.ethTxHash) {
+    throw new Error("This conversion has an existing bridge transfer. Retry it instead of starting a new swap.");
+  }
   if (j?.feePlan?.version === 2 && (j.pendingEth || j.confirmedEth || gasAccounting.costs(j).debt > 0n
       || (j.status !== "done" && (Object.keys(j.ethReceipts || {}).length || j.solSwapSig || j.pendingSig)))) {
     throw new Error("This conversion still has transactions or repayment to reconcile. Retry it instead of resetting its history.");
@@ -1411,9 +1414,11 @@ async function pollGuardians(account, j) {
     }
     return;
   }
-  const n = Array.isArray(record.validators) && record.validators.length ? record.validators.length : 3;
+  const n = await readValidatorCount({ network: S.network, provider: chain.provider() });
+  const progress = { guardianSignatures: Array.isArray(record.signatures) ? record.signatures.length : 0,
+    guardianQuorum: computeQuorum(n) };
   if (isRedeemable(record, n)) {
-    saveJob(account, { ...j, status: "awaiting_redeem", record });
+    saveJob(account, { ...j, ...progress, status: "awaiting_redeem", record, needsTap: false, lastError: null });
   } else if (record.expiration && Number(record.expiration) <= Date.now()) {
     if (j.feePlan?.version === 2) {
       saveJob(account, { ...j, status: "request_signatures" });
@@ -1421,7 +1426,17 @@ async function pollGuardians(account, j) {
     }
     await ethBridge.requestNewSignatures({ ethPrivHex: transitFor(account).ethPriv, ethTxHash: j.ethTxHash, network: S.network, provider: await ethProvider() });
     saveJob(account, { ...j, status: "awaiting_signatures", sigStartedAt: Date.now() });
+  } else if (Date.now() - (j.sigStartedAt || j.startedAt || 0) > POLL_TIMEOUT_MS) {
+    saveJob(account, { ...j, ...progress, record, status: "error", failedAt: "awaiting_signatures",
+      error: `Vortex has ${progress.guardianSignatures} of ${progress.guardianQuorum} required guardian signatures. Retry continues this same bridge transfer.` });
+  } else {
+    saveJob(account, { ...j, ...progress, record });
   }
+}
+
+async function hasBridgeQuorum(record) {
+  const count = await readValidatorCount({ network: S.network, provider: chain.provider() });
+  return isRedeemable(record, count);
 }
 
 /* The bridge already delivered this record (a reply we lost, or a retry). */
@@ -1454,8 +1469,8 @@ function relayerAddress() {
     passkey tap and stays there (see waitsForTap). */
 async function autoRedeem(account, j) {
   const exp = j.record && Number(j.record.expiration);
-  if (exp && exp <= Date.now()) {
-    saveJob(account, { ...j, status: "awaiting_signatures", sigStartedAt: Date.now() });
+  if ((exp && exp <= Date.now()) || !(await hasBridgeQuorum(j.record))) {
+    saveJob(account, { ...j, status: "awaiting_signatures", needsTap: false, sigStartedAt: Date.now() });
     return;
   }
   /* This record names someone else (or nobody) as relayer, so the sponsor
@@ -1475,6 +1490,13 @@ async function autoRedeem(account, j) {
     /* Already delivered on an earlier attempt whose reply we lost. */
     if (ALREADY_DONE.test(m)) {
       finishRedeem(account, j.redeemId || "confirmed", "already completed");
+      return;
+    }
+    // The set can change between polling and submission. Re-poll the same
+    // deposit instead of treating a missing guardian signature as a failed swap.
+    if (/quorum not met/i.test(m)) {
+      saveJob(account, { ...job(account), status: "awaiting_signatures", needsTap: false,
+        lastError: "Waiting for the bridge's required guardian signatures", sigStartedAt: j.sigStartedAt || Date.now() });
       return;
     }
     /* The chain wants the recipient's own authority after all — hand the
@@ -1523,6 +1545,10 @@ async function prepareTapOps(account) {
     if (exp && exp <= Date.now()) {
       saveJob(account, { ...j, status: "awaiting_signatures", sigStartedAt: Date.now() });
       throw new Error("The bridge signatures expired while waiting — requesting fresh ones; try again in ~2 minutes");
+    }
+    if (!(await hasBridgeQuorum(j.record))) {
+      saveJob(account, { ...j, status: "awaiting_signatures", needsTap: false, sigStartedAt: Date.now() });
+      throw new Error("Waiting for more bridge guardian signatures; this same transfer will resume automatically");
     }
     const ops = [await opCompleteTransfer({ record: j.record, network: S.network, provider: chain.provider() })];
     return { step: "redeem", ops, rcLimit: DEFAULT_REDEEM_RC };
