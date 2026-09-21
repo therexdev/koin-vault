@@ -122,8 +122,13 @@ function createProxy({ backendUrl, publicUrl, rpId, secret, clientIp, configureR
             if (apiPath === '/api/config' && configureResponse) data = configureResponse(data);
             if (apiPath === '/api/dapp/create' && data.uri) {
               const uri = new URL(data.uri);
-              if (uri.pathname !== '/' || !uri.searchParams.get('connect') || !uri.searchParams.get('secret')) throw new Error('Unexpected wallet link');
-              data.uri = frontend.origin + uri.pathname + uri.search;
+              const fragment = data.protocolVersion === 2;
+              const params = fragment ? new URLSearchParams(uri.hash.slice(1)) : uri.searchParams;
+              if (uri.pathname !== '/' || uri.username || uri.password || !params.get('connect') || !params.get('secret')
+                  || (fragment ? uri.search : uri.hash)) throw new Error('Unexpected wallet link');
+              if ((data.sessionId && params.get('connect') !== data.sessionId)
+                  || (data.secret && params.get('secret') !== data.secret)) throw new Error('Mismatched wallet link');
+              data.uri = frontend.origin + uri.pathname + (fragment ? uri.hash : uri.search);
             }
             payload = Buffer.from(JSON.stringify(data));
           } catch (_) { return reply(503, 'Wallet backend returned an invalid response'); }

@@ -85,6 +85,26 @@ const { Signer } = require('koilib');
       const status = await fetch(frontend.base + '/api/dapp/status?' + new URLSearchParams({ sessionId: pair.sessionId, secret: pair.secret }), { headers });
       assert.equal(status.headers.get('access-control-allow-origin'), origin);
       assert.equal((await status.json()).connected, false);
+      const secureResponse = await fetch(frontend.base + '/api/dapp/create', { method: 'POST', headers, body: JSON.stringify({ name: 'Trade Koinos', protocolVersion: 2 }) });
+      const securePair = await secureResponse.json();
+      assert.equal(securePair.protocolVersion, 2);
+      const secureUri = new URL(securePair.uri), fragment = new URLSearchParams(secureUri.hash.slice(1));
+      assert.equal(secureUri.origin, 'https://koinvault.app'); assert.equal(secureUri.search, '');
+      assert.equal(fragment.get('connect'), securePair.sessionId); assert.equal(fragment.get('secret'), securePair.secret);
+      const credentials = JSON.stringify({ sessionId: securePair.sessionId, secret: securePair.secret });
+      const secureStatus = await fetch(frontend.base + '/api/dapp/status', { method: 'POST', headers, body: credentials });
+      assert.equal(secureStatus.status, 200); assert.equal((await secureStatus.json()).connected, false);
+      assert.equal(secureStatus.headers.get('cache-control'), 'no-store');
+      for (const endpoint of ['status', 'request-status']) {
+        const wrongPost = await fetch(frontend.base + '/api/dapp/' + endpoint, { method: 'POST', headers: { ...headers, Origin: 'https://different.example' }, body: credentials });
+        assert.equal(wrongPost.status, 403, 'POST polling preserves the session origin check');
+        const missing = await fetch(frontend.base + '/api/dapp/' + endpoint, { method: 'POST', headers, body: JSON.stringify({ sessionId: securePair.sessionId }) });
+        assert.equal(missing.status, 404, 'POST polling still needs the secret');
+      }
+      const walletPending = await fetch(frontend.base + '/api/dapp/pending', { method: 'POST', headers: { ...headers, Origin: 'https://koinvault.app' }, body: credentials });
+      assert.equal(walletPending.status, 200);
+      const foreignPending = await fetch(frontend.base + '/api/dapp/pending', { method: 'POST', headers, body: credentials });
+      assert.equal(foreignPending.status, 403, 'POST does not expose the wallet-only pending queue');
       const wrong = await fetch(frontend.base + '/api/dapp/status?' + new URLSearchParams({ sessionId: pair.sessionId, secret: pair.secret }), { headers: { Origin: 'https://different.example' } });
       assert.equal(wrong.status, 403, 'A different site cannot use this session even with the bearer secret');
     }

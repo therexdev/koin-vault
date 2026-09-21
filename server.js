@@ -214,13 +214,15 @@ api.dappCreate = async (body, ip, _surface, req) => {
   const origin = dappPolicy.websiteOrigin(req.headers.origin);
   if (!origin) throw httpError(403, 'Connect from an HTTPS website');
   if (rateLimited('dapp:create:ip:' + ip, 12, 60000) || rateLimited('dapp:create:global', 240, 60000)) throw httpError(429, 'Too many connection requests; try again shortly');
+  const protocolVersion = body.protocolVersion ?? 1;
+  if (![1, 2].includes(protocolVersion)) throw httpError(400, 'Unsupported connection protocol');
   const made = dappRelay.create({ origin, name: body.name, icon: body.icon });
   const forwardedProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
   const proto = forwardedProto || (req.socket.encrypted ? 'https' : 'http');
   const base = CFG.publicUrl || `${proto}://${req.headers.host}`;
   return {
-    ok: true, sessionId: made.id, secret: made.secret, expiresAt: made.expiresAt,
-    uri: `${base}/?connect=${encodeURIComponent(made.id)}&secret=${encodeURIComponent(made.secret)}`,
+    ok: true, sessionId: made.id, secret: made.secret, expiresAt: made.expiresAt, protocolVersion,
+    uri: `${base}/${protocolVersion === 2 ? '#' : '?'}connect=${encodeURIComponent(made.id)}&secret=${encodeURIComponent(made.secret)}`,
   };
 };
 
@@ -1145,6 +1147,21 @@ function readBody(req, maxBytes = 64 * 1024) {
   });
 }
 
+// Version 2 clients keep bearer credentials in JSON bodies. Retain the GET
+// routes during the coordinated migration of existing third-party clients.
+function dappBodyRead(handler) {
+  return (body, _ip, surface, req) => {
+    const query = new URLSearchParams();
+    for (const key of ['sessionId', 'secret', 'requestId']) {
+      if (body[key] !== undefined) {
+        if (typeof body[key] !== 'string' || body[key].length > 256) throw httpError(400, 'Invalid connection credentials');
+        query.set(key, body[key]);
+      }
+    }
+    return handler(query, surface, req);
+  };
+}
+
 const GET_ROUTES = {
   '/api/config': api.config, '/api/account': api.account, '/api/portfolio': api.portfolio,
   '/api/transactions': api.transactions,
@@ -1154,6 +1171,9 @@ const GET_ROUTES = {
   '/api/dapp/request-status': api.dappRequestStatus,
 };
 const POST_ROUTES = {
+  '/api/dapp/status': dappBodyRead(api.dappStatus),
+  '/api/dapp/pending': dappBodyRead(api.dappPending),
+  '/api/dapp/request-status': dappBodyRead(api.dappRequestStatus),
   '/api/create-account': api.createAccount, '/api/whoami': api.whoami,
   '/api/prepare': api.prepare, '/api/prepare-register': api.prepareRegister,
   '/api/submit': api.submit,
