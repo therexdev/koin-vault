@@ -89,9 +89,11 @@ The funding key takes precedence over a separate fee treasury, and accepted
 plans pin the repayment address. Keep the original sponsor configured until
 its jobs have settled.
 
-Run one process against a local durable data directory and use a dedicated
-funding key. The directory lock is a single-host PID lock, not a distributed
-lock. Do not share this key with another worker, manual sender, or deployment:
+Use a local durable data directory and a dedicated funding key. Live HTTP
+processes on the same host elect one account/funding worker and forward API
+requests to it; remaining processes take over when that owner exits. The
+directory lock is a single-host PID/start-identity lock, not a distributed
+lock. Do not share this key with another deployment, manual sender, or host:
 their nonces and spending would be outside this ledger's control. Persist the
 data directory and back it up securely; it contains transit keys and signed
 transactions. The ledger uses file and directory fsync plus atomic rename.

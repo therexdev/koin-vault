@@ -33,6 +33,7 @@ const appSurface = require('./tools/app-surface');
 const dappRelay = require('./tools/dapp-relay');
 const dappAuth = require('./tools/dapp-auth');
 const walletBackend = require('./tools/wallet-backend');
+const { createWorker } = require('./tools/wallet-worker');
 const { createTokenService } = require('./tools/vault-token-sends');
 const dappLaunch = require('./tools/dapp-launch');
 const dappProducer = require('./tools/dapp-producer');
@@ -100,15 +101,13 @@ const CFG = {
   demo: process.env.DEMO_MODE === '1',
 };
 
-const dappBudget = dappPolicy.createBudget({ file: path.join(CFG.dataDir, 'dapp-sponsorship.json'),
-  globalMana: process.env.DAPP_SPONSOR_MANA_PER_DAY,
-  accountMana: process.env.DAPP_SPONSOR_MANA_PER_ACCOUNT_DAY,
-  siteMana: process.env.DAPP_SPONSOR_MANA_PER_SITE_DAY });
+let dappBudget = null; // Loaded only after this process acquires ownership.
 let dappReservedMana = 0n;
 
 let DEMO = CFG.demo;
 let BOOTING = true;
 let BOOT_ERROR = false;
+let walletWorker = null;
 const forwardWallet = CFG.backendUrl && CFG.backendUrl !== 'local'
   ? walletBackend.createProxy({ backendUrl: CFG.backendUrl, publicUrl: CFG.publicUrl || 'https://wallet.usekoinos.com',
       rpId: CFG.passkeyRpId, secret: CFG.sponsorWif, clientIp,
@@ -142,6 +141,7 @@ setInterval(() => {
 }, 600000).unref();
 
 function clientIp(req) {
+  if (req.walletWorkerIp) return req.walletWorkerIp;
   const forwarded = walletBackend.trustedProxyIp(req, CFG.sponsorWif);
   if (forwarded) return forwarded;
   if (CFG.trustProxyHops > 0) {
@@ -1169,13 +1169,14 @@ const POST_ROUTES = {
   '/api/token/prepare': api.prepare, '/api/token/submit': api.submit,
 };
 
-const server = http.createServer(async (req, res) => {
+async function handleRequest(req, res) {
   const url = new URL(req.url, 'http://localhost');
   const pathname = url.pathname.replace(/\/+$/, '') || '/';
   try {
     const surface = appSurface.requestSurface(pathname, req.headers);
     const apiPath = surface.apiPath;
     if (apiPath.startsWith('/api/')) {
+      if (walletWorker && !walletWorker.isOwner()) return await walletWorker.forward(req, res);
       if (apiPath.startsWith('/api/dapp/')) {
         const route = apiPath.slice('/api/dapp/'.length);
         const origin = dappPolicy.requestOrigin(req, dappWalletUrl(req));
@@ -1238,14 +1239,15 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(status, { 'Content-Type': 'application/json' });
     return res.end(JSON.stringify({ error: String(e.message || e).slice(0, 300) }));
   }
-});
+}
+const server = http.createServer(handleRequest);
 
 /* ---------------- boot ---------------- */
 
 // Bind before any external RPC waits. Hosting must be able to reach the
 // process during startup; API handlers stay gated until stores are ready.
 server.listen(CFG.port, () => {
-  console.log(`serving:  http://localhost:${CFG.port} (initializing)`);
+  console.log(`serving:  http://localhost:${CFG.port} pid=${process.pid}`);
 });
 
 function applyMode() {
@@ -1255,6 +1257,12 @@ function applyMode() {
   const fundingDemo = DEMO || CFG.network !== 'mainnet';
   // Claim the single-worker lock before reading or updating account records.
   funding.configure({ dataDir: CFG.dataDir, demo: fundingDemo, network: 'mainnet' });
+  // A standby may have existed for hours: load today's persisted charges now,
+  // not at process launch, or a takeover could roll the sponsorship budget back.
+  dappBudget = dappPolicy.createBudget({ file: path.join(CFG.dataDir, 'dapp-sponsorship.json'),
+    globalMana: process.env.DAPP_SPONSOR_MANA_PER_DAY,
+    accountMana: process.env.DAPP_SPONSOR_MANA_PER_ACCOUNT_DAY,
+    siteMana: process.env.DAPP_SPONSOR_MANA_PER_SITE_DAY });
   veive.configure({ dataDir: CFG.dataDir, demo: DEMO });
   if (!DEMO) veive.reconcile();
   console.log(`funding:  ETH/USDC/USDT→KOIN ${fundingDemo ? 'demo' : 'LIVE (Vortex + Uniswap)'}`);
@@ -1296,12 +1304,23 @@ function applyMode() {
     console.log('WARNING:  ' + w);
   }
 
-  applyMode();
-  BOOTING = false;
+  const initialize = () => {
+    applyMode();
+    BOOTING = false;
+    BOOT_ERROR = false;
+    console.log(`passkey:  rpId = ${CFG.passkeyRpId || '(page hostname)'}`);
+    console.log(`ready:    ${DEMO ? 'demo mode' : 'live'}`);
+  };
+  if (DEMO) return initialize();
+  walletWorker = createWorker({
+    dataDir: CFG.dataDir, secret: CFG.sponsorWif,
+    identity: [CFG.publicUrl, CFG.passkeyRpId, CFG.network, CFG.modules],
+    handle: handleRequest, clientIp, initialize, onFatal: startupFailed,
+  });
+  await walletWorker.start();
+})().catch(startupFailed);
 
-  console.log(`passkey:  rpId = ${CFG.passkeyRpId || '(page hostname)'}`);
-  console.log(`ready:    ${DEMO ? 'demo mode' : 'live'}`);
-})().catch(e => {
+function startupFailed(e) {
   BOOT_ERROR = true;
-  console.error('Wallet initialization failed:', e.message);
-});
+  console.error(`Wallet initialization failed: pid=${process.pid} data=${CFG.dataDir}:`, e.message);
+}
