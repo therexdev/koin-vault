@@ -17,6 +17,16 @@ const { Signer } = require('koilib');
     chain.mana = chain.koinBalance = () => new Promise(() => {});
     const funding = require(${JSON.stringify(path.join(root, 'tools/funding'))});
     funding.floatHealth = funding._sdkReady = () => new Promise(() => {});
+    const policy = require(${JSON.stringify(path.join(root, 'tools/dapp-policy'))});
+    const createBudget = policy.createBudget;
+    policy.createBudget = options => {
+      const fs = require('node:fs');
+      const result = createBudget(options);
+      fs.appendFileSync(require('node:path').join(process.env.DATA_DIR, 'budget-loads'), JSON.stringify({
+        pid: process.pid, value: fs.existsSync(options.file) ? JSON.parse(fs.readFileSync(options.file, 'utf8')) : null,
+      }) + '\\n');
+      return result;
+    };
     if (process.env.WALLET_BACKEND_URL && process.env.WALLET_BACKEND_URL !== 'local') {
       funding.configure = () => { throw new Error('Frontend must never start a funding worker'); };
       require(${JSON.stringify(path.join(root, 'tools/veive'))}).configure = () => { throw new Error('Frontend must never open accounts'); };
@@ -110,15 +120,43 @@ const { Signer } = require('koilib');
     assert.equal((await fetch(frontend.base + '/api/dapp/challenge', { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: 'https://evil.example' }, body: proofBody })).status, 403);
     assert.equal(fs.readFileSync(path.join(data, 'funding-worker.lock'), 'utf8'), String(primary.child.pid));
     console.log('✓ Both real HTTP app processes use one account store and one funding lock; each domain keeps its own passkey settings');
-    const second = await start();
-    const blocked = await fetch(second.base + '/api/health');
-    assert.equal(blocked.status, 503);
-    assert.match((await blocked.json()).error, /startup failed/i);
-    assert.match(second.logs(), /Another funding worker/);
+    const [second, third] = await Promise.all([start(), start()]);
+    for (const worker of [second, third]) {
+      assert.equal((await fetch(worker.base + '/api/health')).status, 200, worker.logs());
+      assert.match(worker.logs(), /forwarding to active wallet worker/);
+      const who = await fetch(worker.base + '/api/whoami', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ credentialId }) });
+      assert.equal((await who.json()).address, account);
+      assert.equal((await fetch(worker.base + '/android/api/health')).status, 200);
+    }
+    const headers = { 'Content-Type': 'application/json', Origin: 'https://ouro.lifestyle' };
+    const shared = await (await fetch(second.base + '/api/dapp/create', { method: 'POST', headers, body: JSON.stringify({ name: 'Shared session' }) })).json();
+    const status = await fetch(third.base + '/api/dapp/status?' + new URLSearchParams({ sessionId: shared.sessionId, secret: shared.secret }), { headers });
+    assert.equal(status.status, 200, 'All hosting processes use the same in-memory dapp sessions');
     assert.equal(fs.readFileSync(path.join(data, 'funding-worker.lock'), 'utf8'), String(primary.child.pid));
     assert.deepEqual(fs.readFileSync(path.join(data, 'accounts.json')), saved);
     assert.equal((await fetch(primary.base + '/api/health')).status, 200);
-    console.log('✓ Live startup survives stalled RPC and ETH checks; a second worker cannot replace the lock or account records');
+    console.log('✓ Three live HTTP processes share one writer, account store and dapp session state');
+
+    const spentBudget = { day: new Date().toISOString().slice(0, 10), spent: { global: '1000000000' } };
+    fs.writeFileSync(path.join(data, 'dapp-sponsorship.json'), JSON.stringify(spentBudget));
+    assert.equal(fs.readFileSync(path.join(data, 'budget-loads'), 'utf8').trim().split('\n').length, 1,
+      'Standbys do not preload a sponsorship budget that can become stale');
+    const exited = once(primary.child, 'exit'); primary.child.kill('SIGKILL'); await exited;
+    let recovered = false;
+    for (let i = 0; i < 100; i++) {
+      if ([second.child.pid, third.child.pid].includes(Number(fs.readFileSync(path.join(data, 'funding-worker.lock'), 'utf8')))
+          && (await fetch(second.base + '/api/health')).status === 200
+          && (await fetch(third.base + '/api/health')).status === 200) { recovered = true; break; }
+      await new Promise(r => setTimeout(r, 40));
+    }
+    assert.ok(recovered, second.logs() + third.logs());
+    assert.deepEqual(fs.readFileSync(path.join(data, 'accounts.json')), saved);
+    const restored = await fetch(second.base + '/api/whoami', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ credentialId }) });
+    assert.equal((await restored.json()).address, account);
+    assert.equal(fs.readFileSync(path.join(data, 'funding.json'), 'utf8'), '{}');
+    const budgets = fs.readFileSync(path.join(data, 'budget-loads'), 'utf8').trim().split('\n').map(JSON.parse);
+    assert.equal(budgets.length, 2); assert.deepEqual(budgets[1].value, spentBudget, 'Takeover loads the latest persisted budget');
+    console.log('✓ SIGKILL elects exactly one replacement automatically; both surviving processes recover without changing either ledger');
   } finally {
     await Promise.all(children.map(async child => {
       if (child.exitCode !== null || child.signalCode !== null) return;
