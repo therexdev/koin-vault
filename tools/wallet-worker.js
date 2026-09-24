@@ -19,10 +19,42 @@ const same = (a, b) => {
   const x = Buffer.from(String(a || '')), y = Buffer.from(String(b || ''));
   return x.length === y.length && crypto.timingSafeEqual(x, y);
 };
-function reply(res, status, error) {
+function reply(res, status, error, code) {
   if (res.destroyed || res.writableEnded) return;
   res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Retry-After': '1' });
-  res.end(JSON.stringify({ error }));
+  res.end(JSON.stringify({ error, ...(code ? { code } : {}) }));
+}
+
+function listenPrivate(server, endpoint) {
+  return new Promise(resolve => {
+    let settled = false;
+    const done = error => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(error);
+    };
+    const timer = setTimeout(() => {
+      server.close();
+      done(Object.assign(new Error('Private wallet listener did not start'), { code: 'WALLET_WORKER_LISTEN_TIMEOUT' }));
+    }, 5000);
+    server.once('error', done);
+    try {
+      // Managed launchers (LiteSpeed / Passenger) intercept http.listen()
+      // for the public app, ignoring or rejecting a second HTTP listener.
+      // Use the inherited TCP implementation only for this private socket;
+      // the public server still goes through the host's normal HTTP hook.
+      net.Server.prototype.listen.call(server, endpoint, () => {
+        if (settled) { server.close(); return; }
+        const bound = net.Server.prototype.address.call(server);
+        if (!bound || bound.address !== endpoint.host || bound.port !== endpoint.port) {
+          server.close();
+          return done(Object.assign(new Error('Private wallet listener bound an unexpected endpoint'), { code: 'WALLET_WORKER_BIND_MISMATCH' }));
+        }
+        done(null);
+      });
+    } catch (error) { done(error); }
+  });
 }
 
 function createWorker({ dataDir, identity, secret, handle, clientIp, initialize, onFatal,
@@ -34,6 +66,7 @@ function createWorker({ dataDir, identity, secret, handle, clientIp, initialize,
   const mac = value => crypto.createHmac('sha256', key).update(value).digest('base64url');
   const requestOptions = { host: endpoint.host, port: endpoint.port };
   let owner = false, initialized = false, fatal = false, pending = null, role = '', server;
+  let lastFailure = '', lastFailureAt = 0;
   function announce(value) {
     if (role === value) return;
     role = value;
@@ -69,10 +102,7 @@ function createWorker({ dataDir, identity, secret, handle, clientIp, initialize,
     pending = (async () => {
       if (!owner) {
         const candidate = http.createServer(receive);
-        const error = await new Promise(resolve => {
-          candidate.once('error', resolve);
-          candidate.listen(endpoint, () => resolve(null));
-        });
+        const error = await listenPrivate(candidate, endpoint);
         if (error) {
           if (error.code !== 'EADDRINUSE') throw error;
           announce('forwarding to active wallet worker');
@@ -106,14 +136,14 @@ function createWorker({ dataDir, identity, secret, handle, clientIp, initialize,
   function request({ method, path, headers = {}, body, timeoutMs, maxBytes }) {
     return new Promise((resolve, reject) => {
       const upstream = http.request({ ...requestOptions, agent: false, method, path, headers });
-      const timer = setTimeout(() => upstream.destroy(new Error('Wallet worker timed out')), timeoutMs);
+      const timer = setTimeout(() => upstream.destroy(Object.assign(new Error('Wallet worker timed out'), { code: 'ETIMEDOUT' })), timeoutMs);
       const fail = error => { clearTimeout(timer); reject(error); };
       upstream.once('error', fail);
       upstream.once('response', response => {
         const chunks = []; let size = 0;
         response.on('data', chunk => {
           size += chunk.length;
-          if (size > maxBytes) upstream.destroy(new Error('Wallet worker response too large'));
+          if (size > maxBytes) upstream.destroy(Object.assign(new Error('Wallet worker response too large'), { code: 'EMSGSIZE' }));
           else chunks.push(chunk);
         });
         response.once('error', fail);
@@ -127,16 +157,20 @@ function createWorker({ dataDir, identity, secret, handle, clientIp, initialize,
   }
 
   async function forward(req, res) {
+    if (fatal) return reply(res, 503, 'Wallet server could not start. Check the application runtime log.', 'WALLET_WORKER_START_FAILED');
     // Authenticate the listener BEFORE disclosing any request body. The key
     // includes site, network, signing modules and sponsor identity, so a port
     // collision or accidentally shared directory cannot mix different apps.
+    let phase = 'connect';
     try {
       const challenge = crypto.randomBytes(32).toString('hex');
       const probe = await request({ method: 'GET', path: '/_wallet-worker/ping?challenge=' + challenge,
         timeoutMs: 1500, maxBytes: 1024 });
-      if (probe.status !== 200 || !same(JSON.parse(probe.body).proof, mac('owner:' + challenge))) {
+      let proof;
+      try { proof = JSON.parse(probe.body).proof; } catch (_) {}
+      if (probe.status !== 200 || !same(proof, mac('owner:' + challenge))) {
         announce('worker identity mismatch; check site configuration and DATA_DIR');
-        return reply(res, 503, 'Wallet worker configuration does not match. Check the application runtime log.');
+        return reply(res, 503, 'Wallet worker configuration does not match. Check the application runtime log.', 'WALLET_WORKER_IDENTITY');
       }
       const chunks = []; let size = 0;
       const maxBody = /\/api\/dapp\/(launch|approve)$/.test(new URL(req.url, 'http://localhost').pathname)
@@ -154,6 +188,7 @@ function createWorker({ dataDir, identity, secret, handle, clientIp, initialize,
       }
       // Exactly ONE attempt. Never replay a signing/submission/funding POST
       // after a lost response, a timeout, or an owner restart.
+      phase = 'response';
       const answer = await request({ method: req.method, path: req.url, headers, body,
         timeoutMs: 65000, maxBytes: 2 * 1024 * 1024 });
       if (res.destroyed || res.writableEnded) return;
@@ -163,8 +198,17 @@ function createWorker({ dataDir, identity, secret, handle, clientIp, initialize,
       }
       res.writeHead(answer.status, outputHeaders);
       res.end(answer.body);
-    } catch (_) {
-      return reply(res, 503, 'Wallet is starting. Please try again shortly.');
+      lastFailure = '';
+    } catch (error) {
+      const kind = `${phase}:${error.code || error.name || 'Error'}`;
+      if (kind !== lastFailure || Date.now() - lastFailureAt > 30000) {
+        log(`worker:   pid=${process.pid} forwarding failed (${kind}); endpoint=${endpoint.host}:${endpoint.port}`);
+        lastFailure = kind; lastFailureAt = Date.now();
+      }
+      return reply(res, 503, phase === 'connect'
+        ? 'Wallet server cannot reach its active worker. Check the application runtime log.'
+        : 'Wallet server lost the response. Check the transaction status before trying again.',
+      phase === 'connect' ? 'WALLET_WORKER_UNREACHABLE' : 'WALLET_WORKER_RESPONSE_LOST');
     }
   }
 

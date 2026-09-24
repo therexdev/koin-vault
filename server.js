@@ -1202,7 +1202,8 @@ async function handleRequest(req, res) {
       }
       if (BOOTING) {
         res.writeHead(503, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Retry-After': '3' });
-        return res.end(JSON.stringify({ error: BOOT_ERROR ? 'Wallet startup failed. Check the application runtime log.' : 'Wallet is starting. Please reload in a few seconds.' }));
+        return res.end(JSON.stringify({ error: BOOT_ERROR ? 'Wallet startup failed. Check the application runtime log.' : 'Wallet is starting. Please reload in a few seconds.',
+          code: BOOT_ERROR ? 'WALLET_START_FAILED' : 'WALLET_STARTING' }));
       }
       res.setHeader('Content-Type', 'application/json');
       res.setHeader('Cache-Control', 'no-store');
@@ -1322,5 +1323,5 @@ function applyMode() {
 
 function startupFailed(e) {
   BOOT_ERROR = true;
-  console.error(`Wallet initialization failed: pid=${process.pid} data=${CFG.dataDir}:`, e.message);
+  console.error(`Wallet initialization failed: pid=${process.pid} data=${CFG.dataDir} code=${e.code || 'STARTUP_ERROR'}:`, e.message);
 }

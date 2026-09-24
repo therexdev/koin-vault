@@ -21,6 +21,15 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
   assert.equal(config.demo, false); assert.equal(status.hidden, true);
   configContext.api = async () => ({ ok: true, demo: true });
   assert.equal((await vm.runInContext('waitForConfig()', configContext)).demo, true, 'An explicitly configured demo remains supported');
+  configContext.api = async () => { throw Object.assign(new Error('Wallet server could not start.'), {
+    status: 503, code: 'WALLET_WORKER_START_FAILED',
+  }); };
+  const retry = vm.runInContext('waitForConfig()', configContext);
+  await tick();
+  assert.match(status.textContent, /Wallet server could not start/);
+  configContext.api = async () => ({ ok: true, demo: false });
+  delays.shift()(); await retry;
+  assert.equal(status.hidden, true, 'A specific startup error still recovers automatically');
 
   const elements = new Map(), calls = [], identified = [], addresses = [];
   let failLookup = false, remembered = true, creations = 0, local = true, capable = true;
