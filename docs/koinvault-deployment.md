@@ -51,6 +51,18 @@ system releases its listener when it exits; a remaining process then takes over
 automatically and reloads the persistent data. No new package or environment
 variable is required.
 
+The public HTTP listener uses the hosting launcher normally. The private
+loopback listener uses Node's underlying TCP listener because managed launchers
+such as LiteSpeed and Passenger intercept `http.Server.listen()` and may ignore
+or reject a second call. Repeated restarts cannot repair that incompatibility.
+Startup verifies the private address before claiming ownership and reports a
+bounded failure if binding cannot finish. `/api/health` and `/api/config` return
+specific error codes on failure: `WALLET_WORKER_START_FAILED`,
+`WALLET_WORKER_UNREACHABLE`, or `WALLET_WORKER_IDENTITY`. The runtime log records
+the corresponding bind/connect error without recording request bodies or keys.
+`WALLET_WORKER_RESPONSE_LOST` means a request's result is uncertain; a forwarded
+POST is never replayed automatically.
+
 For the first deployment of this change:
 
 1. Stop the existing **KOIN Vault** app processes in Hostinger. The old release

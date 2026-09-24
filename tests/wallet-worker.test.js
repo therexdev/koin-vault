@@ -69,6 +69,7 @@ const { processIdentity, sameProcess } = require('../tools/process-identity');
 
     const lost = await fetch(follower.url + '/api/drop', { method: 'POST', body: 'one submission' });
     assert.equal(lost.status, 503);
+    assert.equal((await lost.json()).code, 'WALLET_WORKER_RESPONSE_LOST');
     assert.equal(fs.readFileSync(path.join(dir, 'submissions'), 'utf8'), 'one submission\n', 'A lost response does not replay a POST');
     console.log('✓ Five simultaneous starts elect one writer; forwarding preserves bodies/IP; identity and local-request authentication; no POST replay');
 

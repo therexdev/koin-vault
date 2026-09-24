@@ -7,11 +7,12 @@ const { spawn } = require('node:child_process');
 const http = require('node:http');
 const { once } = require('node:events');
 const { Signer } = require('koilib');
-(async () => {
+async function run(hostMode) {
   const root = path.resolve(__dirname, '..');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wallet-startup-'));
   const preload = path.join(dir, 'preload.cjs');
   fs.writeFileSync(preload, `
+    require(${JSON.stringify(path.join(root, 'tests/fixtures/managed-http-preload'))});
     require(${JSON.stringify(path.join(root, 'tools/rpc'))}).pickRpcs = () => new Promise(() => {});
     const chain = require(${JSON.stringify(path.join(root, 'tools/chain'))});
     chain.mana = chain.koinBalance = () => new Promise(() => {});
@@ -45,7 +46,7 @@ const { Signer } = require('koilib');
     const portServer = http.createServer(); portServer.listen(0, '127.0.0.1'); await once(portServer, 'listening');
     const port = portServer.address().port; await new Promise(r => portServer.close(r));
     const child = spawn(process.execPath, ['--require', preload, 'server.js'], {
-      cwd: root, env: { PATH: process.env.PATH, PORT: String(port), DATA_DIR: data,
+      cwd: root, env: { PATH: process.env.PATH, PORT: String(port), DATA_DIR: data, MANAGED_HTTP_TEST: hostMode,
         ...(backendUrl === 'local' ? {} : { WALLET_BACKEND_URL: backendUrl }), KOINOS_NETWORK: 'mainnet', DEMO_MODE: '0',
         PUBLIC_URL: backendUrl === 'local' ? 'https://wallet.usekoinos.com' : 'https://koinvault.app',
         PASSKEY_RPID: backendUrl === 'local' ? 'wallet.usekoinos.com' : 'koinvault.app',
@@ -65,6 +66,18 @@ const { Signer } = require('koilib');
   try {
     const primary = await start();
     const health = await fetch(primary.base + '/api/health');
+    if (hostMode === 'denied') {
+      assert.equal(health.status, 503);
+      const failure = await health.json();
+      assert.equal(failure.code, 'WALLET_WORKER_START_FAILED');
+      assert.match(failure.error, /could not start/);
+      assert.doesNotMatch(JSON.stringify(failure), new RegExp(dir));
+      assert.match(primary.logs(), /code=EACCES/);
+      assert.equal(fs.existsSync(path.join(data, 'funding-worker.lock')), false);
+      assert.deepEqual(fs.readFileSync(path.join(data, 'accounts.json')), saved);
+      console.log('✓ A denied private listener reports a startup failure, logs the cause, and never opens the ledger');
+      return;
+    }
     assert.equal(health.status, 200, primary.logs());
     assert.deepEqual(await health.json(), { ok: true, demo: false, network: 'mainnet' });
     const config = await fetch(primary.base + '/api/config', { signal: AbortSignal.timeout(1000) });
@@ -157,6 +170,11 @@ const { Signer } = require('koilib');
     const budgets = fs.readFileSync(path.join(data, 'budget-loads'), 'utf8').trim().split('\n').map(JSON.parse);
     assert.equal(budgets.length, 2); assert.deepEqual(budgets[1].value, spentBudget, 'Takeover loads the latest persisted budget');
     console.log('✓ SIGKILL elects exactly one replacement automatically; both surviving processes recover without changing either ledger');
+    assert.ok(children.length >= 4);
+    for (const worker of [primary, second, third, frontend]) {
+      assert.doesNotMatch(worker.logs(), /listen\(\) was called more than once/, 'Only the public listener goes through the hosting hook');
+    }
+    console.log('✓ Startup, forwarding and takeover on ' + (hostMode || 'plain Node'));
   } finally {
     await Promise.all(children.map(async child => {
       if (child.exitCode !== null || child.signalCode !== null) return;
@@ -164,4 +182,7 @@ const { Signer } = require('koilib');
     }));
     fs.rmSync(dir, { recursive: true, force: true });
   }
+}
+(async () => {
+  for (const mode of (process.env.STARTUP_TEST_HOST ? [process.env.STARTUP_TEST_HOST] : ['', 'litespeed', 'passenger', 'denied'])) await run(mode);
 })().catch(e => { console.error(e); process.exitCode = 1; });
