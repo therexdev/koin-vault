@@ -123,6 +123,26 @@ const tx = (n, events, extra = {}) => ({ seq_num: String(n), trx: { transaction:
   assert.equal(feed.getState().items.length, 21); assert.match(feed.getState().error, /Could not load/);
   fail = false; await feed.refresh(); assert.equal(feed.getState().items.length, 20);
 
+  for (const [status, message, expected] of [
+    [503, 'Wallet startup failed. Check the application runtime log.', /wallet service could not start/i],
+    [503, 'Wallet is starting. Please reload in a few seconds.', /wallet service is starting/i],
+    [429, 'slow down', /Too many requests/],
+    [500, 'private server details', /Could not load activity/],
+  ]) {
+    let outage = false;
+    const failing = createController({ network: 'mainnet', api: async () => {
+      if (outage) throw Object.assign(new Error(message), { status });
+      return { ...page, nextCursor: null };
+    } });
+    failing.setAddress(A); failing.setToken(koinToken); await failing.refresh();
+    const previous = failing.getState().items;
+    outage = true; await failing.refresh();
+    assert.match(failing.getState().error, expected);
+    assert.equal(failing.getState().items, previous, 'Outages preserve previously loaded activity');
+    outage = false; await failing.refresh();
+    assert.equal(failing.getState().error, '', 'Retry clears the outage after recovery');
+  }
+
   const scans = [];
   const sparse = createController({ network: 'mainnet', api: async url => {
     const cursor = new URL(url, 'http://localhost').searchParams.get('cursor'); scans.push(cursor);

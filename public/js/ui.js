@@ -538,8 +538,10 @@ const UI = (() => {
     if (r.address) { cr.hidden = false; cb.textContent = shortAddr(r.address); cb.dataset.full = r.address; }
     else { cr.hidden = true; cb.textContent = ''; delete cb.dataset.full; }
     const ex = byId('tok-explorer');
-    const href = explorerAddr(r.address);
-    ex.hidden = !href; if (href) ex.href = href;
+    const href = explorerAddr(CTX.address);
+    ex.hidden = !href;
+    if (href) ex.href = href;
+    else ex.removeAttribute('href');
     byId('btn-tok-remove').hidden = !!r.native || r.id === 'koin' || r.id === 'vhp';
   }
 
