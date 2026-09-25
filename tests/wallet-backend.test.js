@@ -52,7 +52,10 @@ const listen = async server => { server.listen(0, '127.0.0.1'); await once(serve
     res.setHeader('Content-Type', 'application/json');
     res.setHeader('Access-Control-Allow-Origin', 'https://ouro.lifestyle');
     if (req.url.endsWith('/api/config')) return res.end(JSON.stringify({ ok: true, demo: false, rpId: 'wallet.usekoinos.com', maxCredentialsPerAccount: 32, sendAssets: ['koin', 'vhp'], sendCustomTokens: true, features: { buy: !req.url.startsWith('/android') } }));
-    if (req.url === '/api/dapp/create') return res.end(JSON.stringify({ ok: true, uri: upstreamUrl + '/?connect=session&secret=fixture' }));
+    if (req.url === '/api/dapp/create') {
+      const protocolVersion = JSON.parse(Buffer.concat(parts).toString() || '{}').protocolVersion || 1;
+      return res.end(JSON.stringify({ ok: true, protocolVersion, sessionId: 'session', secret: 'fixture', uri: upstreamUrl + (protocolVersion === 2 ? '/#' : '/?') + 'connect=session&secret=fixture' }));
+    }
     res.end(JSON.stringify({ ok: true, address: 'existing-account-address' }));
   });
   const upstreamUrl = await listen(upstream);
@@ -74,6 +77,10 @@ const listen = async server => { server.listen(0, '127.0.0.1'); await once(serve
     assert.equal(calls.at(-1).body, body); assert.equal(calls.at(-1).origin, vault); assert.equal(calls.at(-1).ip, '192.0.2.17');
     const created = await fetch(proxyUrl + '/api/dapp/create', { method: 'POST', headers: { Origin: 'https://ouro.lifestyle' }, body: '{}' });
     assert.equal((await created.json()).uri, vault + '/?connect=session&secret=fixture');
+    const secure = await fetch(proxyUrl + '/api/dapp/create', { method: 'POST', headers: { Origin: 'https://ouro.lifestyle' }, body: JSON.stringify({ protocolVersion: 2 }) });
+    const pairV2 = await secure.json();
+    assert.equal(pairV2.uri, vault + '/#connect=session&secret=fixture');
+    assert.equal(pairV2.protocolVersion, 2);
     assert.equal(created.headers.get('access-control-allow-origin'), 'https://ouro.lifestyle');
     assert.equal((await fetch(proxyUrl + '/api/submit', { method: 'POST', body: '{}' })).status, 503);
     assert.equal(calls.filter(c => c.url === '/api/submit').length, 1, 'An ambiguous POST must never be retried');

@@ -123,8 +123,11 @@
     const q = new URLSearchParams(location.search);
     OPEN_RECOVERY = q.get('open') === 'recover';
     if (!OPEN_RECOVERY && (q.get('open') || q.get('tab'))) PENDING_INTENT = { open: q.get('open'), tab: q.get('tab') };
-    if (q.get('connect') && q.get('secret')) PENDING_CONNECT = { sessionId: q.get('connect'), secret: q.get('secret') };
-    if ([...q.keys()].length) history.replaceState(null, '', location.pathname);
+    const fragment = new URLSearchParams((location.hash || '').slice(1));
+    if (q.has('connect') || fragment.has('connect')) {
+      try { PENDING_CONNECT = parseConnect(location.href); }
+      finally { history.replaceState(null, '', location.pathname); }
+    } else if ([...q.keys()].length) history.replaceState(null, '', location.pathname);
   } catch (_) {}
 
   const VIEWS = ['#view-landing', '#view-wallet', '#view-recover'];
@@ -242,7 +245,12 @@
     try {
       const url = new URL(String(raw || ''), location.origin);
       if (url.origin !== location.origin) throw new Error('This QR belongs to a different wallet site');
-      const sessionId = url.searchParams.get('connect'), secret = url.searchParams.get('secret');
+      if (url.username || url.password) throw new Error('Invalid wallet link');
+      const fragment = new URLSearchParams(url.hash.slice(1));
+      const inFragment = fragment.has('connect') || fragment.has('secret');
+      if (inFragment && (url.searchParams.has('connect') || url.searchParams.has('secret'))) throw new Error('Ambiguous wallet link');
+      const params = inFragment ? fragment : url.searchParams;
+      const sessionId = params.get('connect'), secret = params.get('secret');
       if (!sessionId || !secret) throw new Error('That is not a KOIN Vault connection QR');
       return { sessionId, secret };
     } catch (e) { throw new Error(e.message || 'That is not a KOIN Vault connection QR'); }
@@ -251,8 +259,7 @@
     UI.showTab('tab-security');
     if (!ADDRESS || !ACTIVE) { PENDING_CONNECT = pair; dappSay('Unlock the wallet first, then the connection will continue.'); return; }
     if (RECOVERY) throw new Error('Sign in with a passkey to connect an app. Recovery mode cannot approve app access.');
-    const query = new URLSearchParams(pair);
-    const info = await api('/api/dapp/status?' + query);
+    const info = await api('/api/dapp/status', pair);
     if (isDappBlocked(info.origin)) throw new Error('You blocked this site on this device. Unblock it under Security to connect.');
     if (!confirm(`Connect to ${info.origin}?\n\nApp name (provided by the site): ${info.name}\nAccount: ${ADDRESS}\n\nThis shares your address and lets the site request transactions. Each transaction needs your passkey. KOIN Vault has not verified this website.`)) return;
     const proof = await api('/api/dapp/challenge', { ...pair, address: ADDRESS });
@@ -301,7 +308,7 @@
     const pair = DAPP;
     DAPP_POLLING = true;
     try {
-      const data = await api('/api/dapp/pending?' + new URLSearchParams(DAPP));
+      const data = await api('/api/dapp/pending', { sessionId: pair.sessionId, secret: pair.secret });
       if (DAPP !== pair || DAPP_BUSY || !ADDRESS) return;
       if (isDappBlocked(data.app.origin)) {
         await api('/api/dapp/disconnect', pair);
