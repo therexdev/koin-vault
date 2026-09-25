@@ -299,8 +299,10 @@ commitments, outstanding debt and available sponsorship capacity. Signed
 Ethereum transactions are persisted before broadcast and replayed by the
 same hash after lost replies. Actual receipt costs, including reverted gas,
 are recorded exactly once. Reset preserves v2 job history and cannot erase
-pending transactions or debt. Run one wallet process per data directory;
-a process lock prevents two workers from allocating the same sponsor nonce.
+pending transactions or debt. Live HTTP processes on one host automatically
+share one account/funding worker per data directory; a process lock prevents
+two workers from allocating the same sponsor nonce. A remaining process takes
+over after the owner exits. See the [restart notes](docs/koinvault-deployment.md#hosting-restarts-and-multiple-processes).
 
 See [the implementation and rollout notes](docs/eth-gas-recovery.md) for
 configuration, existing-job handling and verification requirements.

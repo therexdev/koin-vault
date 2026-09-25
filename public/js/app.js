@@ -50,7 +50,7 @@
       : { headers, ...(path === '/api/config' ? { signal: AbortSignal.timeout(12000) }
         : path.startsWith('/api/transactions?') ? { signal: AbortSignal.timeout(60000) } : {}) });
     const data = await r.json().catch(() => ({}));
-    if (!r.ok) { const e = new Error(data.error || 'request failed'); e.status = r.status; throw e; }
+    if (!r.ok) { const e = new Error(data.error || 'request failed'); e.status = r.status; e.code = data.code; throw e; }
     return data;
   }
 
@@ -63,9 +63,11 @@
         if (value.ok !== true || typeof value.demo !== 'boolean') throw new Error('Invalid wallet configuration');
         status.hidden = true;
         return value;
-      } catch (_) {
+      } catch (error) {
         status.hidden = false;
-        status.textContent = 'Wallet connection unavailable. Retrying automatically…';
+        status.textContent = error.status === 503 && /^WALLET_/.test(error.code || '')
+          ? error.message + ' Retrying automatically…'
+          : 'Wallet connection unavailable. Retrying automatically…';
         await new Promise(resolve => setTimeout(resolve, 3000));
       }
     }

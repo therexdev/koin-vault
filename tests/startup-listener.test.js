@@ -7,16 +7,27 @@ const { spawn } = require('node:child_process');
 const http = require('node:http');
 const { once } = require('node:events');
 const { Signer } = require('koilib');
-(async () => {
+async function run(hostMode) {
   const root = path.resolve(__dirname, '..');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wallet-startup-'));
   const preload = path.join(dir, 'preload.cjs');
   fs.writeFileSync(preload, `
+    require(${JSON.stringify(path.join(root, 'tests/fixtures/managed-http-preload'))});
     require(${JSON.stringify(path.join(root, 'tools/rpc'))}).pickRpcs = () => new Promise(() => {});
     const chain = require(${JSON.stringify(path.join(root, 'tools/chain'))});
     chain.mana = chain.koinBalance = () => new Promise(() => {});
     const funding = require(${JSON.stringify(path.join(root, 'tools/funding'))});
     funding.floatHealth = funding._sdkReady = () => new Promise(() => {});
+    const policy = require(${JSON.stringify(path.join(root, 'tools/dapp-policy'))});
+    const createBudget = policy.createBudget;
+    policy.createBudget = options => {
+      const fs = require('node:fs');
+      const result = createBudget(options);
+      fs.appendFileSync(require('node:path').join(process.env.DATA_DIR, 'budget-loads'), JSON.stringify({
+        pid: process.pid, value: fs.existsSync(options.file) ? JSON.parse(fs.readFileSync(options.file, 'utf8')) : null,
+      }) + '\\n');
+      return result;
+    };
     if (process.env.WALLET_BACKEND_URL && process.env.WALLET_BACKEND_URL !== 'local') {
       funding.configure = () => { throw new Error('Frontend must never start a funding worker'); };
       require(${JSON.stringify(path.join(root, 'tools/veive'))}).configure = () => { throw new Error('Frontend must never open accounts'); };
@@ -35,7 +46,7 @@ const { Signer } = require('koilib');
     const portServer = http.createServer(); portServer.listen(0, '127.0.0.1'); await once(portServer, 'listening');
     const port = portServer.address().port; await new Promise(r => portServer.close(r));
     const child = spawn(process.execPath, ['--require', preload, 'server.js'], {
-      cwd: root, env: { PATH: process.env.PATH, PORT: String(port), DATA_DIR: data,
+      cwd: root, env: { PATH: process.env.PATH, PORT: String(port), DATA_DIR: data, MANAGED_HTTP_TEST: hostMode,
         ...(backendUrl === 'local' ? {} : { WALLET_BACKEND_URL: backendUrl }), KOINOS_NETWORK: 'mainnet', DEMO_MODE: '0',
         PUBLIC_URL: backendUrl === 'local' ? 'https://wallet.usekoinos.com' : 'https://koinvault.app',
         PASSKEY_RPID: backendUrl === 'local' ? 'wallet.usekoinos.com' : 'koinvault.app',
@@ -55,6 +66,18 @@ const { Signer } = require('koilib');
   try {
     const primary = await start();
     const health = await fetch(primary.base + '/api/health');
+    if (hostMode === 'denied') {
+      assert.equal(health.status, 503);
+      const failure = await health.json();
+      assert.equal(failure.code, 'WALLET_WORKER_START_FAILED');
+      assert.match(failure.error, /could not start/);
+      assert.doesNotMatch(JSON.stringify(failure), new RegExp(dir));
+      assert.match(primary.logs(), /code=EACCES/);
+      assert.equal(fs.existsSync(path.join(data, 'funding-worker.lock')), false);
+      assert.deepEqual(fs.readFileSync(path.join(data, 'accounts.json')), saved);
+      console.log('✓ A denied private listener reports a startup failure, logs the cause, and never opens the ledger');
+      return;
+    }
     assert.equal(health.status, 200, primary.logs());
     assert.deepEqual(await health.json(), { ok: true, demo: false, network: 'mainnet' });
     const config = await fetch(primary.base + '/api/config', { signal: AbortSignal.timeout(1000) });
@@ -130,15 +153,48 @@ const { Signer } = require('koilib');
     assert.equal((await fetch(frontend.base + '/api/dapp/challenge', { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: 'https://evil.example' }, body: proofBody })).status, 403);
     assert.equal(fs.readFileSync(path.join(data, 'funding-worker.lock'), 'utf8'), String(primary.child.pid));
     console.log('✓ Both real HTTP app processes use one account store and one funding lock; each domain keeps its own passkey settings');
-    const second = await start();
-    const blocked = await fetch(second.base + '/api/health');
-    assert.equal(blocked.status, 503);
-    assert.match((await blocked.json()).error, /startup failed/i);
-    assert.match(second.logs(), /Another funding worker/);
+    const [second, third] = await Promise.all([start(), start()]);
+    for (const worker of [second, third]) {
+      assert.equal((await fetch(worker.base + '/api/health')).status, 200, worker.logs());
+      assert.match(worker.logs(), /forwarding to active wallet worker/);
+      const who = await fetch(worker.base + '/api/whoami', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ credentialId }) });
+      assert.equal((await who.json()).address, account);
+      assert.equal((await fetch(worker.base + '/android/api/health')).status, 200);
+    }
+    const headers = { 'Content-Type': 'application/json', Origin: 'https://ouro.lifestyle' };
+    const shared = await (await fetch(second.base + '/api/dapp/create', { method: 'POST', headers, body: JSON.stringify({ name: 'Shared session' }) })).json();
+    const status = await fetch(third.base + '/api/dapp/status?' + new URLSearchParams({ sessionId: shared.sessionId, secret: shared.secret }), { headers });
+    assert.equal(status.status, 200, 'All hosting processes use the same in-memory dapp sessions');
     assert.equal(fs.readFileSync(path.join(data, 'funding-worker.lock'), 'utf8'), String(primary.child.pid));
     assert.deepEqual(fs.readFileSync(path.join(data, 'accounts.json')), saved);
     assert.equal((await fetch(primary.base + '/api/health')).status, 200);
-    console.log('✓ Live startup survives stalled RPC and ETH checks; a second worker cannot replace the lock or account records');
+    console.log('✓ Three live HTTP processes share one writer, account store and dapp session state');
+
+    const spentBudget = { day: new Date().toISOString().slice(0, 10), spent: { global: '1000000000' } };
+    fs.writeFileSync(path.join(data, 'dapp-sponsorship.json'), JSON.stringify(spentBudget));
+    assert.equal(fs.readFileSync(path.join(data, 'budget-loads'), 'utf8').trim().split('\n').length, 1,
+      'Standbys do not preload a sponsorship budget that can become stale');
+    const exited = once(primary.child, 'exit'); primary.child.kill('SIGKILL'); await exited;
+    let recovered = false;
+    for (let i = 0; i < 100; i++) {
+      if ([second.child.pid, third.child.pid].includes(Number(fs.readFileSync(path.join(data, 'funding-worker.lock'), 'utf8')))
+          && (await fetch(second.base + '/api/health')).status === 200
+          && (await fetch(third.base + '/api/health')).status === 200) { recovered = true; break; }
+      await new Promise(r => setTimeout(r, 40));
+    }
+    assert.ok(recovered, second.logs() + third.logs());
+    assert.deepEqual(fs.readFileSync(path.join(data, 'accounts.json')), saved);
+    const restored = await fetch(second.base + '/api/whoami', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ credentialId }) });
+    assert.equal((await restored.json()).address, account);
+    assert.equal(fs.readFileSync(path.join(data, 'funding.json'), 'utf8'), '{}');
+    const budgets = fs.readFileSync(path.join(data, 'budget-loads'), 'utf8').trim().split('\n').map(JSON.parse);
+    assert.equal(budgets.length, 2); assert.deepEqual(budgets[1].value, spentBudget, 'Takeover loads the latest persisted budget');
+    console.log('✓ SIGKILL elects exactly one replacement automatically; both surviving processes recover without changing either ledger');
+    assert.ok(children.length >= 4);
+    for (const worker of [primary, second, third, frontend]) {
+      assert.doesNotMatch(worker.logs(), /listen\(\) was called more than once/, 'Only the public listener goes through the hosting hook');
+    }
+    console.log('✓ Startup, forwarding and takeover on ' + (hostMode || 'plain Node'));
   } finally {
     await Promise.all(children.map(async child => {
       if (child.exitCode !== null || child.signalCode !== null) return;
@@ -146,4 +202,7 @@ const { Signer } = require('koilib');
     }));
     fs.rmSync(dir, { recursive: true, force: true });
   }
+}
+(async () => {
+  for (const mode of (process.env.STARTUP_TEST_HOST ? [process.env.STARTUP_TEST_HOST] : ['', 'litespeed', 'passenger', 'denied'])) await run(mode);
 })().catch(e => { console.error(e); process.exitCode = 1; });

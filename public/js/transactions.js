@@ -69,9 +69,15 @@ const Transactions = (() => {
         }
         state.items = items; state.cursor = cursor;
         state.loaded = true; state.expanded = more; state.demo = !!data.demo; state.updated = now();
-      } catch (_) {
+      } catch (error) {
         if (gen === generation) {
-          state.error = 'Could not load activity. Please try again.';
+          state.error = error.status === 503 && /^Wallet startup failed\b/.test(error.message || '')
+            ? 'The wallet service could not start. Activity will be available once the service is restored.'
+            : error.status === 503 && /^Wallet is starting\b/.test(error.message || '')
+              ? 'The wallet service is starting. Please try again shortly.'
+              : error.status === 429
+                ? 'Too many requests. Please wait a moment and try again.'
+                : 'Could not load activity. Please try again.';
           state.retryMore = more;
         }
       } finally {

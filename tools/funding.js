@@ -49,6 +49,7 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { processIdentity, sameProcess } = require('./process-identity');
 const { ethers } = require("ethers");
 const chain = require("./chain");
 const RC = require("./eth/route-constants");
@@ -159,6 +160,8 @@ const BUSY = new Set();
 let _timer = null, _ethProvider = null, _solConn = null;
 const STARTING = new Set();
 const ownedLocks = new Set();
+const workerBusy = pid => Object.assign(new Error('Another funding worker owns this data directory; waiting for that worker to exit'),
+  { code: 'FUNDING_WORKER_BUSY', ownerPid: pid });
 function lockDataDirectory() {
   if (S.demo) return;
   const lock = path.join(S.dataDir, "funding-worker.lock");
@@ -167,22 +170,55 @@ function lockDataDirectory() {
     const fd = fs.openSync(lock, "wx", 0o600);
     try { fs.writeFileSync(fd, String(process.pid)); } finally { fs.closeSync(fd); }
     ownedLocks.add(lock);
+    const ownerFile = lock + '.owner.json';
+    const temp = ownerFile + '.' + process.pid + '.tmp';
+    fs.writeFileSync(temp, JSON.stringify(processIdentity(process.pid)), { mode: 0o600 });
+    fs.renameSync(temp, ownerFile);
   } catch (e) {
     if (e.code !== "EEXIST") throw e;
-    const stat = fs.statSync(lock);
-    const pid = Number(fs.readFileSync(lock, "utf8"));
-    if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error("The funding worker lock needs operator inspection");
+    let stat, pid;
+    try {
+      stat = fs.statSync(lock);
+      pid = Number(fs.readFileSync(lock, "utf8"));
+    } catch (error) {
+      if (error.code === 'ENOENT') throw workerBusy(); // Owner exited during the read.
+      throw error;
+    }
+    if (!Number.isSafeInteger(pid) || pid <= 0) {
+      if (Date.now() - stat.mtimeMs < 30000) throw workerBusy(); // Legacy owner is still writing its PID.
+      throw new Error("The funding worker lock needs operator inspection");
+    }
     let alive = true;
     try { process.kill(pid, 0); } catch (err) { if (err.code === "ESRCH") alive = false; }
-    if (alive) throw new Error("Another funding worker owns this data directory; run only one wallet process per data directory");
-    if (fs.statSync(lock).ino !== stat.ino) throw new Error("The funding worker lock changed; retry startup");
-    fs.unlinkSync(lock);
+    // A reused PID must not turn a dead worker's lock into a permanent outage.
+    // Legacy PID-only locks remain protected while that process is alive.
+    if (alive) {
+      try {
+        const current = processIdentity(pid);
+        if (['Z', 'X'].includes(current.state)) alive = false;
+        const recorded = JSON.parse(fs.readFileSync(lock + '.owner.json', 'utf8'));
+        if (recorded.pid === pid && sameProcess(recorded, current) === false) alive = false;
+      } catch (_) { /* Uncertain identity never permits stealing a live lock. */ }
+    }
+    if (alive) throw workerBusy(pid);
+    try {
+      if (fs.statSync(lock).ino !== stat.ino) throw workerBusy();
+      fs.unlinkSync(lock);
+    } catch (error) {
+      if (error.code === 'ENOENT') throw workerBusy();
+      throw error;
+    }
     lockDataDirectory();
   }
 }
 process.once("exit", () => {
   for (const lock of ownedLocks) {
-    try { if (fs.readFileSync(lock, "utf8") === String(process.pid)) fs.unlinkSync(lock); } catch (_) {}
+    try {
+      if (fs.readFileSync(lock, "utf8") === String(process.pid)) {
+        fs.unlinkSync(lock);
+        try { fs.unlinkSync(lock + '.owner.json'); } catch (_) {}
+      }
+    } catch (_) {}
   }
 });
 const v2 = fundingV2.create({ settings: S, provider: ethProvider, transit: (account) => transitFor(account),
