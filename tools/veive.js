@@ -246,7 +246,9 @@ async function whoami(credentialId) {
   const local = status(id);
   if (local) return local;
   if (S.demo || !chain.veiveReady()) return null;
-  const addr = await chain.credentialAddress(id).catch(() => null);
+  // An unavailable reverse index does not mean the passkey has no wallet.
+  // Let the caller distinguish a retryable lookup failure from a real miss.
+  const addr = await chain.credentialAddress(id);
   if (!addr) return null;
   const rec = S.store.accounts[addr] || {
     address: addr, credentialId: id, publicKey: '', name: 'passkey',

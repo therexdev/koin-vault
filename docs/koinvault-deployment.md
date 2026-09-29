@@ -2,6 +2,25 @@
 
 KOIN Vault defaults to a standalone backend. No old-wallet code change is needed.
 
+## Desktop phone sign-in checks
+
+The desktop **Use phone / QR code** option opens the browser's native passkey
+QR. Scan that code with the phone's Camera app, with Bluetooth enabled on both
+devices. KOIN Vault's **Connect** scanner handles website pairing links; if it
+sees a native sign-in QR, it now shows camera guidance on the Security tab.
+
+After the browser returns the passkey, the page shows **Passkey received** while
+looking up the wallet. Each lookup has a 15-second timeout and at most three
+attempts, reusing the same public credential ID without another phone prompt.
+Only this account read is retried. Unknown credentials still return 404; an
+unavailable account lookup returns 503 and must never be shown as a missing
+wallet. An outage while reopening an existing session retains its saved address.
+
+Deploy the server and frontend together. Verify `/api/config` reports the new
+Git commit, then test the native QR flow with a real phone and desktop. Automated
+tests cover the request options and failure recovery, but cannot confirm a
+particular device's Bluetooth/passkey handoff.
+
 ## Hosting cutover
 
 1. Back up hosting configuration and any existing Vault persistent data.
