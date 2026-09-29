@@ -16,6 +16,12 @@ const passkey = 'existing-vault-passkey-credential';
   chain.credentialRegisteredFor = async (owner, id) => owner === address && [kit, passkey].includes(id);
   chain.accountModules = async () => [chain.K.modules.modSign, chain.K.modules.modValidation];
   veive.configure({ dataDir: dir, demo: false });
+  const lookup = chain.credentialAddress;
+  chain.credentialAddress = async () => { throw new Error('RPC network unavailable'); };
+  await assert.rejects(veive.whoami(passkey), /RPC network unavailable/,
+    'An unavailable chain must not be mistaken for a missing wallet');
+  assert.equal(veive.status(passkey), null, 'A failed lookup cannot create an account record');
+  chain.credentialAddress = lookup;
   assert.equal(veive.status(kit), null);
   assert.equal((await veive.whoami(kit)).address, address);
   await veive.ensureReady(address);
@@ -29,6 +35,18 @@ const passkey = 'existing-vault-passkey-credential';
   assert.equal(veive.status(kit).address, address);
   assert.equal(veive.status(passkey).address, address);
   assert.deepEqual(veive.credentialsFor(address), [kit, passkey]);
+  chain.credentialAddress = async () => { throw new Error('RPC network unavailable'); };
+  assert.equal((await veive.whoami(passkey)).address, address, 'Known accounts still reopen during RPC outages');
+  const server = fs.readFileSync(path.join(__dirname, '../server.js'), 'utf8');
+  const context = require('node:vm').createContext({ api: {}, veive,
+    httpError: (status, message) => Object.assign(new Error(message), { status }) });
+  require('node:vm').runInContext(server.slice(server.indexOf('api.whoami ='), server.indexOf('/** Ground truth:')), context);
+  await assert.rejects(context.api.whoami({ credentialId: 'unseen-passkey-credential' }),
+    error => error.status === 503 && /temporarily unavailable/.test(error.message),
+    'The HTTP handler reports a retryable outage, not a 404');
+  chain.credentialAddress = async () => null;
+  await assert.rejects(context.api.whoami({ credentialId: 'unseen-passkey-credential' }),
+    error => error.status === 404, 'A completed lookup with no account remains a 404');
   console.log('✓ Empty backend rediscovers recovery and Vault credentials, persists across restart, and rejects unknown kits');
 })().catch(e => { console.error(e); process.exitCode = 1; })
   .finally(() => fs.rmSync(dir, { recursive: true, force: true }));

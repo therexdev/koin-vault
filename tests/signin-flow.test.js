@@ -6,6 +6,28 @@ const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '../public/js/app.js'), 'utf8');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 (async () => {
+  // Exercise the actual request wrapper with a hung response body as well as
+  // a connection that never returns headers. Neither may trap sign-in.
+  for (const hangBody of [false, true]) {
+    let controller, timeout, request;
+    const apiContext = vm.createContext({
+      WalletClient: { android: false, apiPath: path => path },
+      AbortSignal: { timeout: ms => { timeout = ms; controller = new AbortController(); return controller.signal; } },
+      fetch: async (_path, options) => {
+        request = options;
+        const stalled = () => new Promise((_, reject) => options.signal.addEventListener('abort', () => reject(options.signal.reason)));
+        return hangBody ? { ok: true, json: stalled } : stalled();
+      },
+    });
+    vm.runInContext(source.slice(source.indexOf('  async function api('), source.indexOf('  /* ---------------- boot')), apiContext);
+    const pending = apiContext.api('/api/whoami', { credentialId: 'fixture' });
+    await tick();
+    assert.equal(timeout, 15000);
+    assert.equal(request.method, 'POST');
+    const rejected = assert.rejects(pending, { name: 'TimeoutError' });
+    controller.abort(Object.assign(new Error('Timed out'), { name: 'TimeoutError' }));
+    await rejected;
+  }
   const status = { hidden: false, textContent: '' }, delays = [];
   let attempts = 0, resolved = false;
   const configContext = vm.createContext({
@@ -31,8 +53,9 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
   delays.shift()(); await retry;
   assert.equal(status.hidden, true, 'A specific startup error still recovers automatically');
 
-  const elements = new Map(), calls = [], identified = [], addresses = [];
+  const elements = new Map(), calls = [], identified = [], addresses = [], alerts = [];
   let failLookup = false, remembered = true, creations = 0, local = true, capable = true;
+  let lookupFailures = [], failureDelays = 0;
   let creationError = null, signInCancelled = false, selectedCredential = 'original-credential', holdCreation = null;
   const phoneOptions = [], sheets = [], busy = [];
   function element(id) {
@@ -41,7 +64,8 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
     return elements.get(id);
   }
   const context = vm.createContext({
-    $: element, document: { createElement: () => ({}) },
+    $: element, document: { createElement: () => ({ set textContent(value) { alerts.push(value); } }) },
+    setTimeout: callback => { failureDelays++; setImmediate(callback); },
     ADDRESS: null, RECOVERY: null,
     UI: { openSheet: id => sheets.push(id), closeSheet() {}, setPasskeyBusy: value => busy.push(value) },
     Passkey: { supported: () => capable, platformReady: async () => local, remembered: () => remembered,
@@ -59,7 +83,10 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
       forget: () => { throw new Error('Sign-in must not discard a passkey or switch to creation'); } },
     api: async (route, body) => { calls.push({ route, body });
       if (route === '/api/whoami' && failLookup) { const err = new Error('Not found'); err.status = 404; throw err; }
-      return { address: route === '/api/whoami' ? (body.credentialId === 'other-credential' ? 'other-account' : 'original-account') : 'new-account', step: 'active' }; },
+      if (route === '/api/whoami' && lookupFailures.length) {
+        const next = lookupFailures.shift(); if (next === 'malformed') return {}; throw next;
+      }
+      return { address: route === '/api/whoami' ? (body.credentialId === 'other-credential' ? 'other-account' : 'original-account') : 'new-account', step: 'active', credentials: [] }; },
     storeAddr: address => addresses.push(address), takeSmart() {}, pollStatus() {}, show() {},
   });
   const start = source.indexOf('  /* ---------------- landing:');
@@ -140,6 +167,28 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
   failLookup = true;
   await click('#btn-phone-signin'); assert.equal(creations, beforePhone, 'Unknown phone passkeys never trigger signup');
   failLookup = false;
+  for (const outage of [Object.assign(new Error('Unavailable'), { status: 503 }),
+    new TypeError('Failed to fetch'), Object.assign(new Error('Timed out'), { name: 'TimeoutError' }), 'malformed']) {
+    lookupFailures = [outage];
+    const promptsBefore = identified.length, requestsBefore = calls.length, createdBefore = creations;
+    await click('#btn-phone-signin');
+    assert.equal(identified.length, promptsBefore + 1, 'A lookup retry does not ask the phone to approve again');
+    assert.equal(calls.length, requestsBefore + 2);
+    assert.equal(calls.at(-1).body.credentialId, calls.at(-2).body.credentialId);
+    assert.equal(addresses.at(-1), 'original-account'); assert.equal(creations, createdBefore);
+  }
+  const addressesBefore = addresses.length, promptsBefore = identified.length;
+  lookupFailures = Array.from({ length: 3 }, () => Object.assign(new Error('Unavailable'), { status: 503 }));
+  await click('#btn-phone-signin');
+  assert.equal(identified.length, promptsBefore + 1);
+  assert.equal(addresses.length, addressesBefore, 'Exhausted retries cannot open an unverified account');
+  assert.match(alerts.at(-1), /passkey was received.*wallet server/);
+  assert.equal(element('#btn-phone-signin').disabled, false, 'Failure restores sign-in controls');
+  const requestsBeforeMissing = calls.length;
+  failLookup = true; await click('#btn-phone-signin'); failLookup = false;
+  assert.equal(calls.length, requestsBeforeMissing + 1, 'A genuine missing account is not retried');
+  assert.match(alerts.at(-1), /No wallet was found/);
+  assert.ok(failureDelays > 0);
   await click('#btn-phone-create'); assert.equal(creations, beforePhone + 1);
   assert.equal(phoneOptions.at(-1).usePhone, false, 'Creation allows the browser to offer Google Password Manager and phones');
   assert.equal(busy.at(-1), false);

@@ -45,11 +45,16 @@
   /* ---------------- api ---------------- */
   async function api(path, body) {
     const headers = WalletClient.android ? { 'X-Wallet-Client': 'android' } : {};
-    const r = await fetch(WalletClient.apiPath(path), body
+    // whoami uses POST but only reads public account identity. Bound both the
+    // headers and body wait so a stalled lookup cannot trap sign-in forever.
+    const lookup = path === '/api/whoami';
+    const request = body
       ? { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
       : { headers, ...(path === '/api/config' ? { signal: AbortSignal.timeout(12000) }
-        : path.startsWith('/api/transactions?') ? { signal: AbortSignal.timeout(60000) } : {}) });
-    const data = await r.json().catch(() => ({}));
+        : path.startsWith('/api/transactions?') ? { signal: AbortSignal.timeout(60000) } : {}) };
+    if (lookup) request.signal = AbortSignal.timeout(15000);
+    const r = await fetch(WalletClient.apiPath(path), request);
+    const data = await r.json().catch(error => { if (lookup) throw error; return {}; });
     if (!r.ok) { const e = new Error(data.error || 'request failed'); e.status = r.status; e.code = data.code; throw e; }
     return data;
   }
@@ -243,6 +248,9 @@
   });
   function parseConnect(raw) {
     try {
+      if (/^FIDO:/i.test(String(raw || '').trim())) {
+        throw new Error('This is a desktop sign-in QR. Scan it with your phone’s Camera app, then choose the passkey. Keep Bluetooth on for both devices.');
+      }
       const url = new URL(String(raw || ''), location.origin);
       if (url.origin !== location.origin) throw new Error('This QR belongs to a different wallet site');
       if (url.username || url.password) throw new Error('Invalid wallet link');
@@ -270,7 +278,7 @@
   }
   async function scanDapp() {
     try { const hit = await QR.scan(); if (hit) await connectDapp(parseConnect(hit.raw || hit.address)); }
-    catch (e) { dappSay(e.message || 'Could not connect', 'err'); }
+    catch (e) { UI.showTab('tab-security'); dappSay(e.message || 'Could not connect', 'err'); }
   }
   function paintDappRequest(app, request) {
     const isNew = request && request.id !== DAPP_REQUEST?.id;
@@ -422,8 +430,27 @@
 
   async function signIn(usePhone) {
     // Sign-in always discovers all accounts, regardless of the last used key.
+    alertLine(usePhone ? 'Waiting for your phone. Scan the QR with your phone’s Camera app and approve the passkey.' : 'Choose a saved passkey to continue…');
     const credentialId = await Passkey.identify(true, { usePhone });
-    const who = await api('/api/whoami', { credentialId });
+    let who;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      alertLine(attempt ? 'Passkey received. Reconnecting to your wallet…' : 'Passkey received. Opening your wallet…');
+      try {
+        who = await api('/api/whoami', { credentialId });
+        if (!who || typeof who.address !== 'string' || !who.address || !Array.isArray(who.credentials) || typeof who.step !== 'string') {
+          throw new Error('Invalid wallet account response');
+        }
+        break;
+      } catch (error) {
+        // Reuse only the public credential ID for this read. Never replay a
+        // transaction, create an account, or reopen the phone prompt here.
+        if (error.status === 404) throw error;
+        if ((error.status && error.status < 500) || attempt === 2) {
+          throw new Error('Your passkey was received, but the wallet server could not open your account. Please try sign-in again.');
+        }
+        await new Promise(resolve => setTimeout(resolve, 1500));
+      }
+    }
     ADDRESS = who.address; storeAddr(ADDRESS);
     RECOVERY = null;
     takeSmart(who);
@@ -459,8 +486,7 @@
       if (e.status === 404) {
         alertLine('No wallet was found for that passkey. Choose another saved passkey, or use a registered recovery kit.');
       } else if (usePhone && e.name === 'NotAllowedError') {
-        alertLine('Phone sign-in was cancelled or unavailable. If you only saw USB, choose Other options → Use a phone or tablet, or try a saved passkey in Chrome.');
-        UI.openSheet('sheet-phone');
+        alertLine('The phone passkey step did not finish. Scan a fresh QR with your phone’s Camera app, keep Bluetooth on for both devices, and choose a koinvault.app passkey. You can also try Sign in with a saved passkey.');
       } else alertLine(friendly(e));
     } finally {
       ENTERING = false;

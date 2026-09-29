@@ -15,6 +15,8 @@ for (const separator of ['?', '#']) {
   assert.equal(pair.sessionId, 'session'); assert.equal(pair.secret, 'fixture');
   assert.deepEqual(scrubbed, ['/']);
   assert.equal(context.parseConnect(location.href).secret, 'fixture');
+  assert.throws(() => context.parseConnect('FIDO:/123456'), /Camera app.*Bluetooth/,
+    'Native desktop passkey QRs explain which camera to use');
   for (const invalid of [origin + '/?connect=x&secret=y#connect=session&secret=fixture',
     origin + '/#connect=session', 'https://evil.example/#connect=session&secret=fixture',
     'https://user@koinvault.app/#connect=session&secret=fixture']) {
@@ -32,3 +34,18 @@ for (const separator of ['?', '#']) {
   }).catch(error => { console.error(error); process.exitCode = 1; });
 }
 console.log('✓ Fragment and legacy pairing links parse and scrub; ambiguous and foreign links fail; status credentials use request bodies');
+
+(async () => {
+  const tabs = [], messages = [];
+  const context = vm.createContext({
+    location: new URL(origin), URL, URLSearchParams,
+    QR: { scan: async () => ({ raw: 'FIDO:/123456' }) },
+    UI: { showTab: tab => tabs.push(tab) }, dappSay: message => messages.push(message),
+    connectDapp: () => { throw new Error('A native sign-in QR cannot pair a dapp'); },
+  });
+  vm.runInContext(parseSource + source.slice(source.indexOf('  async function scanDapp('), source.indexOf('  function paintDappRequest(')), context);
+  await context.scanDapp();
+  assert.deepEqual(tabs, ['tab-security'], 'A scan error must be visible when Connect was opened from Home');
+  assert.match(messages[0], /desktop sign-in QR.*Camera app/);
+  console.log('✓ Scanning a native sign-in QR shows visible phone-camera guidance');
+})().catch(error => { console.error(error); process.exitCode = 1; });

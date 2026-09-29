@@ -508,7 +508,9 @@ api.accountStatus = async (params) => {
 /** Which account does this passkey open? (Store first, then the chain's
     own credential index.) */
 api.whoami = async (body) => {
-  const rec = await veive.whoami(body.credentialId);
+  let rec;
+  try { rec = await veive.whoami(body.credentialId); }
+  catch (_) { throw httpError(503, 'Wallet account lookup is temporarily unavailable. Please retry sign-in.'); }
   if (!rec) throw httpError(404, 'that passkey has no smart account here — create one first');
   return { ok: true, ...rec };
 };
