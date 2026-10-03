@@ -39,6 +39,13 @@ const eth = (n) => ethers.formatEther(n);
 const units = (asset, n) => ethers.formatUnits(n, asset === "eth" ? 18 : asset === "sol" ? 9 : 6);
 const positive = (n, why) => { if (n <= 0n) throw new Error(why); return n; };
 
+function canRequote(j) {
+  return !!(j?.feePlan?.version === 2 && j.status === "error" && j.settlementComplete
+    && !j.pendingEth && !j.confirmedEth && !j.pendingTx && !j.ethTxHash
+    && ["approve_permit2_reset", "approve_permit2", "approve_ur", "swap_usdt_vkoin"].includes(j.failedAt)
+    && BigInt(j.usdtSats || 0) > 0n && A.costs(j).debt === 0n);
+}
+
 function create(ctx) {
   const S = ctx.settings;
   const accepted = new Map();
@@ -288,7 +295,61 @@ function create(ctx) {
     });
   }
 
-  return { quote, start, line, locked, makePlan, walletFor, sponsorFor, save, capacity, cfg,
+  // A quote is bound to the complete durable snapshot. Approval cannot race
+  // Retry, another tab, a receipt reconciliation, or a different conversion.
+  const recoveryQuotes = new Map();
+  const snapshotOf = (j) => crypto.createHash("sha256").update(JSON.stringify(j)).digest("hex");
+  async function requote(account, quoteId) {
+    return locked(async () => {
+      const j = ctx.job(account);
+      if (!canRequote(j)) throw new Error("This conversion must reconcile its current step before a fresh quote is available. Use Retry.");
+      const p = await ctx.provider();
+      const snapshot = snapshotOf(j);
+      if (quoteId) {
+        const q = recoveryQuotes.get(quoteId);
+        if (!q || q.account !== account || q.snapshot !== snapshot || q.expiresAt <= Date.now()) {
+          throw new Error("The recovery quote expired or the conversion changed. Review a fresh quote.");
+        }
+        if (BigInt(await p.getBalance(j.ethFrom, "latest")) < BigInt(q.remainingGasWei)) {
+          throw new Error(`Add ETH to your existing deposit address: this quote requires ${eth(q.remainingGasWei)} ETH available for remaining gas. Then review a fresh quote.`);
+        }
+        if (BigInt(await swap.balanceOf(p, RC.USDT, j.ethFrom)) < BigInt(j.usdtSats)) throw new Error("The USDT balance changed; the conversion needs reconciliation.");
+        const updated = save(account, { ...j, feePlan: q.plan, estKoinOut: q.plan.koinOut,
+          estFeeEth: eth(q.plan.estimatedFeeWei), status: j.failedAt, failedAt: null,
+          error: null, lastError: null, transientCount: 0,
+          quoteRevision: (j.quoteRevision || 0) + 1, quoteApprovedAt: Date.now() });
+        recoveryQuotes.delete(quoteId);
+        return { job: updated };
+      }
+      const m = await market();
+      const steps = ["approve_permit2_reset", "approve_permit2", "approve_ur", "swap_usdt_vkoin", "approve_bridge", "bridge_token", "request_signatures"];
+      // Keep a Permit2 renewal reserve even if the swap itself is next.
+      const remaining = steps.slice(Math.min(steps.indexOf(j.failedAt), 2));
+      const cost = stepCosts(remaining, m);
+      const paidGas = sum(Object.values(j.ethReceipts || {}).map(x => x.gasWei));
+      const paidFee = BigInt(j.feePlan.serviceWei) + A.bps(A.costs(j).sponsor, j.feePlan.riskBps);
+      const koinOut = positive(BigInt(await quotes.quoteVkoinOut({ usdtSats: j.usdtSats, provider: p })), "No KOIN quote is available");
+      const plan = A.serialize({ ...j.feePlan, maxFeePerGas: m.ceiling, priorityFeePerGas: m.priority,
+        gasLimits: { ...j.feePlan.gasLimits, ...cost.gasLimits },
+        gasMaxWei: paidGas + cost.maxGasWei,
+        estimatedFeeWei: paidGas + paidFee + cost.estimatedGasWei,
+        maxFeeWei: paidGas + paidFee + cost.maxGasWei,
+        ownEthMaxWei: paidGas + paidFee + cost.maxGasWei,
+        koinOut, koinOutMin: quotes.applySlippage(koinOut, j.slippageBps) });
+      const id = crypto.randomUUID(), expiresAt = Date.now() + cfg().quoteSeconds * 1000;
+      for (const [key, q] of recoveryQuotes) if (q.expiresAt <= Date.now() || q.account === account) recoveryQuotes.delete(key);
+      if (recoveryQuotes.size >= 2000) recoveryQuotes.delete(recoveryQuotes.keys().next().value);
+      recoveryQuotes.set(id, { account, snapshot, expiresAt, plan, remainingGasWei: cost.maxGasWei });
+      const available = BigInt(await p.getBalance(j.ethFrom, "latest"));
+      return { quote: { quoteId: id, expiresAt, usdt: units("usdt", j.usdtSats),
+        koinOut: String(koinOut), koinOutMin: plan.koinOutMin,
+        remainingGasMaxEth: eth(cost.maxGasWei), totalMaxFeeEth: eth(plan.maxFeeWei),
+        additionalEthNeeded: eth(A.shortfall(cost.maxGasWei, available)),
+        previousKoinOutMin: j.feePlan.koinOutMin, previousMaxFeeEth: eth(j.feePlan.maxFeeWei) } };
+    });
+  }
+
+  return { requote, quote, start, line, locked, makePlan, walletFor, sponsorFor, save, capacity, cfg,
     // Execution methods are installed below to keep quoting free of sends.
     ...executor({ ctx, S, cfg, locked, walletFor, sponsorFor, save, capacity }) };
 }
@@ -606,4 +667,4 @@ function executor({ ctx, S, cfg, locked, walletFor, sponsorFor, save, capacity }
   } };
 }
 
-module.exports = { create, GAS };
+module.exports = { create, GAS, canRequote };
