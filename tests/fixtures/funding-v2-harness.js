@@ -26,7 +26,7 @@ function harness({ own = "0", sponsor = "1", policy = {}, service = "1" } = {}) 
   const otherWallet = new ethers.Wallet("0x" + "44".repeat(32));
   const wallets = { [account]: transitWallet, [second]: otherWallet };
   const ethBalances = new Map([[transitWallet.address, eth(own)], [otherWallet.address, eth(own)], [sponsorWallet.address, eth(sponsor)]]);
-  const tokens = new Map(), allowances = new Map(), receipts = new Map(), jobs = {}, history = {}, sends = [];
+  const tokens = new Map(), allowances = new Map(), permitAllowances = new Map(), receipts = new Map(), jobs = {}, history = {}, sends = [];
   for (const w of Object.values(wallets)) for (const token of [RC.USDC, RC.USDT, RC.VKOIN]) tokens.set(tokenKey(w.address, token), token === RC.VKOIN ? 0n : 150000000n);
   const opts = { gas: 1000000000n, unavailableRecovery: false, loseNextSend: false, revertNext: false, dropReceipt: false };
   const getToken = (owner, token) => tokens.get(tokenKey(owner, token)) || 0n;
@@ -68,6 +68,10 @@ function harness({ own = "0", sponsor = "1", policy = {}, service = "1" } = {}) 
             const [spender, amount] = new ethers.Interface(swap.ERC20_ABI).decodeFunctionData("approve", tx.data);
             allowances.set(allowanceKey(owner, tx.to, spender), amount); break;
           }
+          case "approve_ur": {
+            const [token, spender, amount, expiration] = new ethers.Interface(swap.PERMIT2_ABI).decodeFunctionData("approve", tx.data);
+            permitAllowances.set(allowanceKey(owner, token, spender), { amount, expiration }); break;
+          }
           case "gas_buy_eth": {
             const iface = new ethers.Interface(recovery.ROUTER_ABI);
             const [, calls] = iface.decodeFunctionData("multicall(uint256,bytes[])", tx.data);
@@ -88,6 +92,10 @@ function harness({ own = "0", sponsor = "1", policy = {}, service = "1" } = {}) 
           }
           case "swap_eth_usdt": moveToken(RC.USDT, tx.to, owner, BigInt(j.amountWei) * 3000000000n / 10n ** 18n); break;
           case "swap_usdt_vkoin": {
+            const key = allowanceKey(owner, RC.USDT, RC.UNIVERSAL_ROUTER), permit = permitAllowances.get(key);
+            assert.ok(permit && permit.expiration >= BigInt(Math.floor(Date.now() / 1000)), "the swap requires an unexpired Permit2 approval");
+            assert.ok(permit.amount >= BigInt(j.usdtSats), "Permit2 must authorize the full swap amount");
+            permitAllowances.set(key, { ...permit, amount: permit.amount - BigInt(j.usdtSats) });
             moveToken(RC.USDT, owner, tx.to, BigInt(j.usdtSats));
             moveToken(RC.VKOIN, ethers.ZeroAddress, owner, BigInt(j.usdtSats) * 2000n); break;
           }
@@ -106,7 +114,7 @@ function harness({ own = "0", sponsor = "1", policy = {}, service = "1" } = {}) 
   };
   swap.balanceOf = async (_p, token, owner) => getToken(owner, token);
   swap.allowance = async (_p, token, owner, spender) => allowances.get(allowanceKey(owner, token, spender)) || 0n;
-  swap.permit2Allowance = async () => ({ amount: 0n, expiration: 0 });
+  swap.permit2Allowance = async (_p, owner, token, spender) => permitAllowances.get(allowanceKey(owner, token, spender)) || { amount: 0n, expiration: 0n };
   const min = (v) => quotes.applySlippage(v, 150);
   quotes.quoteUsdtOut = async ({ amountWei }) => ({ usdt: BigInt(amountWei) * 3000000000n / 10n ** 18n, fee: 500 });
   quotes.quoteEthToVkoin = async ({ amountEth }) => {
@@ -139,7 +147,7 @@ function harness({ own = "0", sponsor = "1", policy = {}, service = "1" } = {}) 
     records: () => Object.values(history), koinosProvider: () => ({}), relayer: () => "" };
   let engine = create(ctx);
   return { account, second, ctx, settings, get engine() { return engine; }, restart: () => { engine = create(ctx); },
-    jobs, history, opts, sends, receipts, tokens, allowances, ethBalances, provider, wallets, sponsorWallet,
+    jobs, history, opts, sends, receipts, tokens, allowances, permitAllowances, ethBalances, provider, wallets, sponsorWallet,
     balance: (a) => ethBalances.get(a), setOwn: (value, a = account) => ethBalances.set(wallets[a].address, eth(value)),
     async start(asset = "usdt", route = "C", input = "100", a = account) {
       const amount = ethers.parseUnits(input, asset === "eth" ? 18 : asset === "sol" ? 9 : 6);
