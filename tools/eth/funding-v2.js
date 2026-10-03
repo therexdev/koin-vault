@@ -323,7 +323,12 @@ function executor({ ctx, S, cfg, locked, walletFor, sponsorFor, save, capacity }
     const wallet = sponsored ? await sponsorFor() : await walletFor(account);
     if (sponsored && wallet.address.toLowerCase() !== String(plan.sponsorAddress).toLowerCase()) throw new Error("The original gas sponsor must remain configured until this job is settled");
     const tx = { to: req.to, data: req.data || "0x", value: BigInt(req.value || 0), from: wallet.address };
-    const estimate = BigInt(await wallet.estimateGas(tx));
+    let estimate;
+    try { estimate = BigInt(await wallet.estimateGas(tx)); }
+    catch (e) {
+      if (e.code !== "CALL_EXCEPTION") throw e;
+      throw new Error(`Ethereum rejected this step before sending: ${swap.describeRevert(e)}. Retry rechecks the approval and keeps your existing limits.`, { cause: e });
+    }
     const limit = estimate + A.bps(estimate, cfg().gasHeadroomBps);
     const stepLimit = BigInt(plan.gasLimits[j.status] || 0);
     if (limit > stepLimit) throw new Error("This step needs more gas than the approved route budget; no transaction was sent");
@@ -540,11 +545,16 @@ function executor({ ctx, S, cfg, locked, walletFor, sponsorFor, save, capacity }
         }
         case "approve_ur": {
           const a = await swap.permit2Allowance(p, wallet.address, RC.USDT, RC.UNIVERSAL_ROUTER);
-          if (BigInt(a.amount) >= BigInt(j.usdtSats) && Number(a.expiration) > now + 300) return setState(account, j, "swap_usdt_vkoin");
+          if (swap.permit2CoversSwap(a, j.usdtSats, now + 300)) return setState(account, j, "swap_usdt_vkoin");
           return send(account, j, swap.buildPermit2ApproveTx({ token: RC.USDT, spender: RC.UNIVERSAL_ROUTER,
             amount: j.usdtSats, expiration: now + 3600 }));
         }
         case "swap_usdt_vkoin": {
+          // Retry resumes this exact step, sometimes hours after approval.
+          // Pending/confirmed transactions were reconciled above: only a NEW
+          // swap may return to approval, never one that could already be sent.
+          const a = await swap.permit2Allowance(p, wallet.address, RC.USDT, RC.UNIVERSAL_ROUTER);
+          if (!swap.permit2CoversSwap(a, j.usdtSats, now + 300)) return setState(account, j, "approve_ur");
           const q = BigInt(await quotes.quoteVkoinOut({ usdtSats: j.usdtSats, provider: p }));
           if (q < BigInt(plan.koinOutMin)) throw new Error("The market moved below your approved KOIN minimum; wait and Retry");
           j = save(account, { ...j, vkoinBefore: String(await swap.balanceOf(p, RC.VKOIN, wallet.address)) });

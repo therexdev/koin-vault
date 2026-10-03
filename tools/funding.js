@@ -998,7 +998,7 @@ async function advanceEth(account, j) {
     }
     case "approve_ur": {
       const a = await swap.permit2Allowance(p, wallet.address, RC.USDT, RC.UNIVERSAL_ROUTER);
-      if (BigInt(a.amount) >= BigInt(j.usdtSats) && Number(a.expiration) > now + 60) {
+      if (swap.permit2CoversSwap(a, j.usdtSats, now + SWAP_DEADLINE_SEC)) {
         return saveJob(account, { ...j, status: "swap_usdt_vkoin" });
       }
       const tx = swap.buildPermit2ApproveTx({ token: RC.USDT, spender: RC.UNIVERSAL_ROUTER, amount: j.usdtSats, expiration: now + PERMIT2_EXPIRY_SEC });
@@ -1006,6 +1006,10 @@ async function advanceEth(account, j) {
       return saveJob(account, { ...j, pendingTx: hash });
     }
     case "swap_usdt_vkoin": {
+      const a = await swap.permit2Allowance(p, wallet.address, RC.USDT, RC.UNIVERSAL_ROUTER);
+      if (!swap.permit2CoversSwap(a, j.usdtSats, now + SWAP_DEADLINE_SEC)) {
+        return saveJob(account, { ...j, status: "approve_ur" });
+      }
       const vkoinExpected = await ethSwap.quoteVkoinOut({ usdtSats: j.usdtSats, provider: p });
       const minVkoinOut = ethSwap.applySlippage(vkoinExpected, j.slippageBps);
       const vkoinBefore = (await swap.balanceOf(p, RC.VKOIN, wallet.address)).toString();

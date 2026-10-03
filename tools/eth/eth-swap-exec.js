@@ -114,6 +114,14 @@ function buildPermit2ApproveTx({ token, spender, amount, expiration }) {
   return { to: RC.PERMIT2, data, value: 0n };
 }
 
+// An approval checked at an earlier step may expire while a job is paused.
+// Require it to cover the entire transaction deadline, plus one worker tick,
+// both when skipping approval and immediately before building a new swap.
+function permit2CoversSwap(approval, amount, deadline) {
+  return BigInt(approval.amount) >= BigInt(amount)
+    && BigInt(approval.expiration) > BigInt(deadline) + 60n;
+}
+
 // ---- Uniswap v4 UniversalRouter: USDT -> vKOIN ----
 const UR_ABI = ["function execute(bytes commands, bytes[] inputs, uint256 deadline) payable"];
 // Universal Router command + v4 action opcodes.
@@ -240,6 +248,7 @@ module.exports = {
   buildEthToUsdtTx,
   buildUsdcToUsdtTx,
   permit2Allowance,
+  permit2CoversSwap,
   buildPermit2ApproveTx,
   buildUsdtToVkoinTx,
   sendTx,
