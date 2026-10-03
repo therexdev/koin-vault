@@ -6,10 +6,10 @@
 const http = require('node:http');
 const net = require('node:net');
 const mode = process.env.MANAGED_HTTP_TEST;
-if (mode === 'denied') {
+if (mode === 'denied' || mode === 'unix-denied') {
   const listen = net.Server.prototype.listen;
   net.Server.prototype.listen = function (...args) {
-    if (args[0]?.exclusive === true) {
+    if (args[0]?.exclusive === true && (mode === 'denied' || args[0]?.path)) {
       process.nextTick(() => this.emit('error', Object.assign(new Error('Private port denied by host'), { code: 'EACCES' })));
       return this;
     }

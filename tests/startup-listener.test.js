@@ -66,6 +66,12 @@ async function run(hostMode) {
   try {
     const primary = await start();
     const health = await fetch(primary.base + '/api/health');
+    const runtimeResponse = await fetch(primary.base + '/api/runtime');
+    const runtime = await runtimeResponse.json();
+    assert.equal(runtime.workerRecovery, 2);
+    assert.equal(runtime.worker.protocol, 2);
+    assert.doesNotMatch(JSON.stringify(runtime), new RegExp(dir));
+    assert.doesNotMatch(JSON.stringify(runtime), /SPONSOR_WIF|ethPriv|credentialId/);
     if (hostMode === 'denied') {
       assert.equal(health.status, 503);
       const failure = await health.json();
@@ -73,13 +79,26 @@ async function run(hostMode) {
       assert.match(failure.error, /could not start/);
       assert.doesNotMatch(JSON.stringify(failure), new RegExp(dir));
       assert.match(primary.logs(), /code=EACCES/);
+      assert.equal(runtimeResponse.status, 503);
+      assert.equal(runtime.worker.lastFailure.reason, 'EACCES');
       assert.equal(fs.existsSync(path.join(data, 'funding-worker.lock')), false);
       assert.deepEqual(fs.readFileSync(path.join(data, 'accounts.json')), saved);
       console.log('✓ A denied private listener reports a startup failure, logs the cause, and never opens the ledger');
       return;
     }
     assert.equal(health.status, 200, primary.logs());
+    assert.equal(runtimeResponse.status, 200);
+    assert.equal(runtime.worker.ready, true);
+    if (hostMode === 'unix-denied') assert.equal(runtime.worker.transport, 'tcp');
     assert.deepEqual(await health.json(), { ok: true, demo: false, network: 'mainnet' });
+    const malformed = await new Promise((resolve, reject) => {
+      const req = http.request(primary.base, { path: 'http://[invalid' }, res => {
+        res.resume(); resolve(res.statusCode);
+      });
+      req.once('error', reject); req.end();
+    });
+    assert.equal(malformed, 400);
+    assert.equal((await fetch(primary.base + '/api/health')).status, 200, 'Malformed URLs cannot terminate the public worker');
     const config = await fetch(primary.base + '/api/config', { signal: AbortSignal.timeout(1000) });
     assert.equal(config.status, 200, 'Stalled Koinos and ETH probes cannot block configuration');
     assert.equal((await config.json()).demo, false);
@@ -204,5 +223,5 @@ async function run(hostMode) {
   }
 }
 (async () => {
-  for (const mode of (process.env.STARTUP_TEST_HOST ? [process.env.STARTUP_TEST_HOST] : ['', 'litespeed', 'passenger', 'denied'])) await run(mode);
+  for (const mode of (process.env.STARTUP_TEST_HOST ? [process.env.STARTUP_TEST_HOST] : ['', 'litespeed', 'passenger', 'unix-denied', 'denied'])) await run(mode);
 })().catch(e => { console.error(e); process.exitCode = 1; });

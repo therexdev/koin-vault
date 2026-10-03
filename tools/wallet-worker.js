@@ -7,12 +7,19 @@ const net = require('node:net');
 // A kernel-owned listener elects one writer. Unlike a PID file, it cannot
 // survive a crash. Extra hosting processes serve static files and relay API
 // requests to that writer, including its in-memory signing/dapp sessions.
-function endpointFor(dataDir) {
+function endpointFor(dataDir, transport = process.env.WALLET_WORKER_TRANSPORT || 'auto') {
   const id = crypto.createHash('sha256').update(fs.realpathSync(dataDir)).digest('hex');
-  // Loopback TCP works on Node 18+ including hosts that prohibit abstract
-  // Unix sockets. Identity authentication rejects an unrelated port occupant.
+  if (!['auto', 'tcp'].includes(transport)) throw new Error('WALLET_WORKER_TRANSPORT must be auto or tcp');
+  const [major, minor] = process.versions.node.split('.').map(Number);
+  if (transport !== 'tcp' && process.platform === 'linux' && (major > 20 || (major === 20 && minor >= 8))) {
+    // Kernel-owned namespace, not a file and not a shared hosting TCP port.
+    // A crash releases it automatically; never unlink a live worker socket.
+    return { path: '\0koin-vault-' + id, exclusive: true };
+  }
   return { host: '127.0.0.1', port: 20000 + parseInt(id.slice(0, 8), 16) % 40000, exclusive: true };
 }
+const connectionFor = endpoint => endpoint.path ? { socketPath: endpoint.path } : { host: endpoint.host, port: endpoint.port };
+const transportOf = endpoint => endpoint.path ? 'unix' : 'tcp';
 
 const HEADER = 'x-koin-vault-worker';
 const same = (a, b) => {
@@ -47,7 +54,7 @@ function listenPrivate(server, endpoint) {
       net.Server.prototype.listen.call(server, endpoint, () => {
         if (settled) { server.close(); return; }
         const bound = net.Server.prototype.address.call(server);
-        if (!bound || bound.address !== endpoint.host || bound.port !== endpoint.port) {
+        if (endpoint.path ? bound !== endpoint.path : (!bound || bound.address !== endpoint.host || bound.port !== endpoint.port)) {
           server.close();
           return done(Object.assign(new Error('Private wallet listener bound an unexpected endpoint'), { code: 'WALLET_WORKER_BIND_MISMATCH' }));
         }
@@ -60,13 +67,26 @@ function listenPrivate(server, endpoint) {
 function createWorker({ dataDir, identity, secret, handle, clientIp, initialize, onFatal,
   log = console.log, retryMs = 1000 }) {
   fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
-  const endpoint = endpointFor(dataDir);
+  let endpoint = endpointFor(dataDir);
+  const legacyEndpoint = endpointFor(dataDir, 'tcp');
   const key = crypto.createHmac('sha256', secret).update('koin-vault-worker-v1\n')
     .update(JSON.stringify([fs.realpathSync(dataDir), identity])).digest();
   const mac = value => crypto.createHmac('sha256', key).update(value).digest('base64url');
-  const requestOptions = { host: endpoint.host, port: endpoint.port };
   let owner = false, initialized = false, fatal = false, pending = null, role = '', server;
+  let legacyForward = null, peerReady = false, fault = null;
   let lastFailure = '', lastFailureAt = 0;
+  const status = () => ({ protocol: 2, role: fatal ? 'failed' : initialized ? 'owner'
+    : legacyForward ? 'forwarding-legacy' : owner ? 'waiting' : peerReady ? 'forwarding' : 'unavailable',
+    ready: !fatal && (initialized || peerReady), transport: transportOf(legacyForward || endpoint),
+    ...(fault ? { lastFailure: fault } : {}) });
+  function failed(code, stage, error) {
+    fault = { code, stage, reason: error?.code || code, at: new Date().toISOString() };
+    const kind = `${stage}:${fault.reason}`;
+    if (kind !== lastFailure || Date.now() - lastFailureAt > 30000) {
+      log(`worker:   pid=${process.pid} ${code} stage=${stage} reason=${fault.reason} transport=${transportOf(endpoint)}`);
+      lastFailure = kind; lastFailureAt = Date.now();
+    }
+  }
   function announce(value) {
     if (role === value) return;
     role = value;
@@ -81,7 +101,7 @@ function createWorker({ dataDir, identity, secret, handle, clientIp, initialize,
       const challenge = url.searchParams.get('challenge');
       if (!/^[a-f0-9]{64}$/.test(challenge || '')) return reply(res, 400, 'Invalid worker challenge');
       res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-      return res.end(JSON.stringify({ proof: mac('owner:' + challenge) }));
+      return res.end(JSON.stringify({ proof: mac('owner:' + challenge), ready: initialized || !!legacyForward }));
     }
     const proof = String(req.headers[HEADER] || '');
     const [value, signature, extra] = proof.split('.');
@@ -93,7 +113,31 @@ function createWorker({ dataDir, identity, secret, handle, clientIp, initialize,
       req.walletWorkerIp = ip; // Trusted property, never a browser-supplied header.
       delete req.headers[HEADER];
     } catch (_) { return reply(res, 403, 'Invalid wallet worker request'); }
-    return handle(req, res);
+    // HTTP request listeners do not consume returned promises. A rejected
+    // handler must fail this request, not kill the elected process.
+    Promise.resolve().then(() => handle(req, res)).catch(error => {
+      failed('WALLET_WORKER_REQUEST_FAILED', 'handler', error);
+      if (res.headersSent) return res.destroy();
+      reply(res, 500, 'Wallet request failed. Check the application runtime log.', 'WALLET_WORKER_REQUEST_FAILED');
+    });
+  }
+
+  async function probe(target) {
+    const challenge = crypto.randomBytes(32).toString('hex');
+    const answer = await request({ endpoint: target, method: 'GET', path: '/_wallet-worker/ping?challenge=' + challenge,
+      timeoutMs: 1500, maxBytes: 1024 });
+    let data;
+    try { data = JSON.parse(answer.body); } catch (_) {}
+    if (answer.status !== 200 || !same(data?.proof, mac('owner:' + challenge))) {
+      throw Object.assign(new Error('Private listener is not this wallet worker'), { code: 'WALLET_WORKER_IDENTITY' });
+    }
+    return data.ready !== false; // v1 workers did not include readiness.
+  }
+
+  function guardListener(listener) {
+    // Releasing an election listener while still writing permits two owners.
+    listener.on('close', () => process.exit(1));
+    listener.on('error', () => process.exit(1));
   }
 
   async function step() {
@@ -101,41 +145,77 @@ function createWorker({ dataDir, identity, secret, handle, clientIp, initialize,
     if (pending) return pending;
     pending = (async () => {
       if (!owner) {
-        const candidate = http.createServer(receive);
-        const error = await listenPrivate(candidate, endpoint);
+        let candidate = http.createServer(receive);
+        let error = await listenPrivate(candidate, endpoint);
+        if (error && endpoint.path && ['EACCES', 'EPERM', 'EINVAL', 'EAFNOSUPPORT', 'EPROTONOSUPPORT'].includes(error.code)) {
+          log(`worker:   abstract socket unavailable (${error.code}); using authenticated loopback TCP`);
+          endpoint = legacyEndpoint;
+          candidate = http.createServer(receive);
+          error = await listenPrivate(candidate, endpoint);
+        }
         if (error) {
           if (error.code !== 'EADDRINUSE') throw error;
-          announce('forwarding to active wallet worker');
+          // EADDRINUSE proves only that something is listening. Never call
+          // it a wallet worker until it has answered our identity challenge.
+          try {
+            peerReady = await probe(endpoint);
+            fault = null;
+            announce(peerReady ? 'forwarding to active wallet worker' : 'waiting for wallet worker initialization');
+          } catch (error) {
+            peerReady = false;
+            failed(error.code === 'WALLET_WORKER_IDENTITY' ? error.code : 'WALLET_WORKER_UNREACHABLE', 'election', error);
+            announce('private listener occupied but no authenticated wallet worker is reachable');
+          }
           return;
         }
         server = candidate;
         owner = true;
         // Losing the listener while still writing would permit two owners.
         // Production never closes it separately from exiting the process.
-        server.on('close', () => process.exit(1));
-        server.on('error', () => process.exit(1));
+        guardListener(server);
         announce('owns wallet runtime');
       }
       try {
         await initialize();
         initialized = true;
+        legacyForward = null; peerReady = false; fault = null;
         announce('active wallet worker');
+        // Keep old TCP-only processes connected during a rolling deployment.
+        // An occupied legacy port is harmless: the primary socket still owns
+        // election and the funding lock remains the final single-writer gate.
+        if (endpoint.path) {
+          const alias = http.createServer(receive);
+          const error = await listenPrivate(alias, legacyEndpoint);
+          if (!error) guardListener(alias);
+          else log(`worker:   legacy TCP alias unavailable (${error.code}); primary unix worker is active`);
+        }
       } catch (error) {
         if (error.code !== 'FUNDING_WORKER_BUSY') throw error;
         // An old release may still own the legacy funding lock during the
         // first rollout. Keep the election listener and wait for it to exit.
         announce(`waiting for previous worker pid=${error.ownerPid || '?'}`);
+        failed('FUNDING_WORKER_BUSY', 'initialize', error);
+        // During rollout the old owner may still be serving its TCP endpoint.
+        // Relay only after authentication; never steal its live funding lock.
+        legacyForward = null; peerReady = false;
+        if (endpoint.path) {
+          try {
+            peerReady = await probe(legacyEndpoint);
+            if (peerReady) legacyForward = legacyEndpoint;
+          } catch (_) { /* Keep waiting for the recorded owner to exit. */ }
+        }
       }
     })().catch(error => {
       fatal = true;
+      failed('WALLET_WORKER_START_FAILED', 'initialize', error);
       onFatal(error);
     }).finally(() => { pending = null; });
     return pending;
   }
 
-  function request({ method, path, headers = {}, body, timeoutMs, maxBytes }) {
+  function request({ endpoint: target = endpoint, method, path, headers = {}, body, timeoutMs, maxBytes }) {
     return new Promise((resolve, reject) => {
-      const upstream = http.request({ ...requestOptions, agent: false, method, path, headers });
+      const upstream = http.request({ ...connectionFor(target), agent: false, method, path, headers });
       const timer = setTimeout(() => upstream.destroy(Object.assign(new Error('Wallet worker timed out'), { code: 'ETIMEDOUT' })), timeoutMs);
       const fail = error => { clearTimeout(timer); reject(error); };
       upstream.once('error', fail);
@@ -163,15 +243,8 @@ function createWorker({ dataDir, identity, secret, handle, clientIp, initialize,
     // collision or accidentally shared directory cannot mix different apps.
     let phase = 'connect';
     try {
-      const challenge = crypto.randomBytes(32).toString('hex');
-      const probe = await request({ method: 'GET', path: '/_wallet-worker/ping?challenge=' + challenge,
-        timeoutMs: 1500, maxBytes: 1024 });
-      let proof;
-      try { proof = JSON.parse(probe.body).proof; } catch (_) {}
-      if (probe.status !== 200 || !same(proof, mac('owner:' + challenge))) {
-        announce('worker identity mismatch; check site configuration and DATA_DIR');
-        return reply(res, 503, 'Wallet worker configuration does not match. Check the application runtime log.', 'WALLET_WORKER_IDENTITY');
-      }
+      const target = legacyForward || endpoint;
+      peerReady = await probe(target);
       const chunks = []; let size = 0;
       const maxBody = /\/api\/dapp\/(launch|approve)$/.test(new URL(req.url, 'http://localhost').pathname)
         ? 512 * 1024 : 64 * 1024;
@@ -189,7 +262,7 @@ function createWorker({ dataDir, identity, secret, handle, clientIp, initialize,
       // Exactly ONE attempt. Never replay a signing/submission/funding POST
       // after a lost response, a timeout, or an owner restart.
       phase = 'response';
-      const answer = await request({ method: req.method, path: req.url, headers, body,
+      const answer = await request({ endpoint: target, method: req.method, path: req.url, headers, body,
         timeoutMs: 65000, maxBytes: 2 * 1024 * 1024 });
       if (res.destroyed || res.writableEnded) return;
       const outputHeaders = { 'Content-Type': answer.headers['content-type'] || 'application/json', 'Cache-Control': 'no-store' };
@@ -199,12 +272,14 @@ function createWorker({ dataDir, identity, secret, handle, clientIp, initialize,
       res.writeHead(answer.status, outputHeaders);
       res.end(answer.body);
       lastFailure = '';
+      fault = null;
     } catch (error) {
-      const kind = `${phase}:${error.code || error.name || 'Error'}`;
-      if (kind !== lastFailure || Date.now() - lastFailureAt > 30000) {
-        log(`worker:   pid=${process.pid} forwarding failed (${kind}); endpoint=${endpoint.host}:${endpoint.port}`);
-        lastFailure = kind; lastFailureAt = Date.now();
+      peerReady = false;
+      if (error.code === 'WALLET_WORKER_IDENTITY') {
+        failed(error.code, phase, error);
+        return reply(res, 503, 'Wallet worker configuration does not match. Check the application runtime log.', error.code);
       }
+      failed(phase === 'connect' ? 'WALLET_WORKER_UNREACHABLE' : 'WALLET_WORKER_RESPONSE_LOST', phase, error);
       return reply(res, 503, phase === 'connect'
         ? 'Wallet server cannot reach its active worker. Check the application runtime log.'
         : 'Wallet server lost the response. Check the transaction status before trying again.',
@@ -214,7 +289,7 @@ function createWorker({ dataDir, identity, secret, handle, clientIp, initialize,
 
   const timer = setInterval(() => { void step(); }, retryMs);
   timer.unref();
-  return { start: step, isOwner: () => owner, forward };
+  return { start: step, isOwner: () => owner && !legacyForward, forward, status };
 }
 
 module.exports = { createWorker, endpointFor };

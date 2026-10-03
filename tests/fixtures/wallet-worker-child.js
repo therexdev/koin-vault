@@ -7,6 +7,11 @@ const funding = require('../../tools/funding');
 const dir = process.env.WORKER_TEST_DIR;
 let worker, ready = false;
 async function handle(req, res) {
+  if (req.url === '/api/runtime') {
+    const state = worker.status();
+    res.writeHead(state.ready ? 200 : 503, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify(state));
+  }
   if (!worker.isOwner()) return worker.forward(req, res);
   if (!ready) { res.writeHead(503); return res.end('{}'); }
   let body = ''; for await (const chunk of req) body += chunk;
@@ -14,6 +19,7 @@ async function handle(req, res) {
     fs.appendFileSync(path.join(dir, 'submissions'), body + '\n');
     return req.socket.destroy();
   }
+  if (req.url === '/api/throw') throw new Error('fixture handler rejection');
   res.writeHead(200, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ pid: process.pid, ip: req.walletWorkerIp || '127.0.0.42', body }));
 }
