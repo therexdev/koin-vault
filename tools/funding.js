@@ -654,6 +654,7 @@ function publicJob(j) {
   const { record, vaa, pendingEth, confirmedEth, ethReceipts, feePlan, pendingSolRaw, ...rest } = j;
   return {
     ...rest,
+    canRequote: require("./eth/funding-v2").canRequote(j),
     ...(feePlan ? { feeModel: feePlan.version, estimatedFeeEth: ethers.formatEther(feePlan.estimatedFeeWei),
       maximumFeeEth: ethers.formatEther(feePlan.maxFeeWei), sponsorDebtEth: ethers.formatEther(gasAccounting.costs(j).debt),
       actualEthereumGasEth: ethers.formatEther(Object.values(ethReceipts || {}).reduce((a, r) => a + BigInt(r.gasWei), 0n)) } : {}),
@@ -806,6 +807,10 @@ const reconcile = (account, j) => (isSolPhase(j) ? reconcileSol(account, j) : re
    on this list is assumed to be a real spend. */
 const IDEMPOTENT_STEPS = new Set(["wh_redeem", "awaiting_redeem", "bridge_token"]);
 
+async function requote(account, quoteId) {
+  const result = await v2.requote(account, quoteId);
+  return result.job ? { job: publicJob(result.job) } : result;
+}
 async function resume(account) {
   if (trade.blocks(account)) throw new Error("Finish the current sale or ETH withdrawal first");
   const j = job(account);
@@ -1922,7 +1927,7 @@ async function railHealth() {
 }
 
 module.exports = {
-  configure, enable, status, start, resume, reset, quoteFor, trade,
+  configure, enable, status, start, resume, requote, reset, quoteFor, trade,
   prepareTapOps, onTapDone, transitFor, job, publicJob,
   /* the driver, exposed so tests can step it without waiting on the timer */
   tick,

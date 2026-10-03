@@ -97,3 +97,20 @@ Bridge ABI/semantics were checked against the official repositories:
 [Koinos bridge](https://github.com/VortexBridge/koinos-bridge-contract),
 [Ethereum bridge](https://github.com/VortexBridge/koinos-bridge-ethereum), and
 [Vortex UI](https://github.com/VortexBridge/interface-bridge).
+
+### Rehearsal branch, updated 2026-10-03
+
+`feat/koin-to-eth-withdrawal` includes the deployed worker recovery, Permit2
+renewal and explicit buy requoting fixes through main commit `2c0b46843efb`.
+Hostinger production is now on Node 22 with a ready Unix worker. Keep Node 22,
+`npm start`, the existing environment variables and DATA_DIR for the rehearsal.
+The complete main test script and all trade simulations pass on this combined
+branch. No real sale or withdrawal has been signed by development tooling.
+
+For the first funded rehearsal, deploy this branch in Hostinger, open Trade,
+enter a modest KOIN amount, compare the two routes and review the fee/gas
+budget. Approve the sale and each requested Koinos step with your passkey.
+After ETH arrives, test Withdraw Ethereum to an address you control. Check
+the receiving balance and transaction receipt before testing Max. Repeat for
+the other route before public rollout. Keep the deployment on this branch
+until any pending sale or withdrawal is completed and reconciled.

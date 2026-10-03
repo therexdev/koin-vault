@@ -956,6 +956,12 @@ api.fundResume = async (body) => {
   catch (e) { throw httpError(400, e.message); }
 };
 
+api.fundRequote = async (body) => {
+  const account = fundAccount(body.credentialId);
+  try { return { ok: true, ...(await funding.requote(account, body.quoteId)) }; }
+  catch (e) { throw httpError(400, e.message); }
+};
+
 api.fundReset = async (body) => {
   const account = fundAccount(body.credentialId);
   try { funding.reset(account); return { ok: true }; }
@@ -1226,7 +1232,7 @@ const POST_ROUTES = {
   '/api/fund/sell/quote': api.tradeQuote,
   '/api/fund/trade/prepare': api.tradePrepare, '/api/fund/trade/submit': api.tradeSubmit,
   '/api/fund/prepare-step': api.fundPrepareStep,
-  '/api/fund/resume': api.fundResume, '/api/fund/reset': api.fundReset,
+  '/api/fund/requote': api.fundRequote, '/api/fund/resume': api.fundResume, '/api/fund/reset': api.fundReset,
   '/api/dapp/create': api.dappCreate, '/api/dapp/connect': api.dappConnect,
   '/api/dapp/challenge': api.dappChallenge,
   '/api/dapp/launch': api.dappLaunch,

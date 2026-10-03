@@ -48,3 +48,17 @@ No real swap, approval or withdrawal was broadcast during these checks.
 The error and approval behavior were verified against Uniswap's
 [Permit2 implementation](https://github.com/Uniswap/permit2/blob/main/src/AllowanceTransfer.sol)
 and [interface](https://github.com/Uniswap/permit2/blob/main/src/interfaces/IAllowanceTransfer.sol).
+
+## A saved quote no longer covers gas or output
+
+For a settled conversion paused before USDT → vKOIN, **Review updated quote**
+prices the exact saved USDT amount and remaining gas. It displays the new minimum
+KOIN, old minimum, remaining gas ceiling and total fee ceiling before approval.
+Approval updates the same job; receipts, debt history and completed fees remain.
+No new sponsorship, fee collection, input increase or restart is authorized.
+If ETH is insufficient, the UI shows the additional ETH needed at the existing
+deposit address. A fresh review is available after funding.
+
+Pending/confirmed transactions and bridge deposits cannot be requoted. Quotes
+expire and are bound to the account and complete job snapshot; server restart
+requires a new quote. Retry alone still retains existing limits.

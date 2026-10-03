@@ -103,6 +103,7 @@ const Fund = (() => {
     opt('#fund-sol-addr', (n) => n.addEventListener('click', () => copyAddr('sol')));
     $('#btn-fund-land').addEventListener('click', land);
     $('#btn-fund-retry').addEventListener('click', () => act('/api/fund/resume'));
+    opt('#btn-fund-requote', n => n.addEventListener('click', reviewRecovery));
     $('#btn-fund-reset').addEventListener('click', () => act('/api/fund/reset'));
     const assets = $('#fund-assets');
     assets.addEventListener('click', (e) => {
@@ -178,6 +179,26 @@ const Fund = (() => {
     try { await navigator.clipboard.writeText(a); el.style.borderColor = 'var(--good)'; }
     catch (_) { window.prompt(`Copy your ${solana ? 'Solana' : 'Ethereum'} deposit address:`, a); }
     setTimeout(() => { el.style.borderColor = ''; }, 900);
+  }
+
+  async function reviewRecovery() {
+    const button = $('#btn-fund-requote');
+    button.disabled = true;
+    try {
+      say('Getting an updated quote…');
+      const { quote: q } = await CTX.api('/api/fund/requote', { credentialId: CTX.credentialId() });
+      if (Number(q.additionalEthNeeded) > 0) {
+        say(`The remaining steps need up to ${q.remainingGasMaxEth} ETH for gas. Add ${q.additionalEthNeeded} ETH to your existing ETH deposit address, then review again. Your USDT and completed steps stay in this conversion.`, 'err');
+        return;
+      }
+      const amount = v => (Number(v) / 1e8).toLocaleString(undefined, { maximumFractionDigits: 8 });
+      const ok = window.confirm(`Continue this conversion with updated terms?\n\nUSDT to convert: ${q.usdt}\nEstimated KOIN: ${amount(q.koinOut)}\nNew minimum KOIN: ${amount(q.koinOutMin)} (previous: ${amount(q.previousKoinOutMin)})\nMaximum remaining gas: ${q.remainingGasMaxEth} ETH\nTotal fee ceiling including recorded costs: ${q.totalMaxFeeEth} ETH (previous: ${q.previousMaxFeeEth})\n\nCompleted steps stay recorded. No new platform fee. Gas is paid from your existing ETH balance. Approve and continue?`);
+      if (!ok) { say('Quote not approved. Your existing limits are unchanged.'); return; }
+      await CTX.api('/api/fund/requote', { credentialId: CTX.credentialId(), quoteId: q.quoteId });
+      say('Updated quote approved. Continuing your conversion.');
+      await refresh();
+    } catch (e) { say(e.message || 'Could not update the quote', 'err'); }
+    finally { button.disabled = false; }
   }
 
   async function act(path) {
@@ -544,6 +565,7 @@ const Fund = (() => {
          the money actually is, so it is safe on a step that is merely slow. */
       const stuck = j.status === 'error' || !!j.stalled;
       $('#btn-fund-retry').hidden = !stuck;
+      opt('#btn-fund-requote', n => { n.hidden = !j.canRequote; });
       $('#btn-fund-reset').hidden = !['done', 'error'].includes(j.status)
         || (j.status !== 'done' && !!j.ethTxHash);
       opt('#fund-job .btn-row', (n) => { n.hidden = !(tap || stuck || j.status === 'done'); });
