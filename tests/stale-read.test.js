@@ -43,8 +43,16 @@ require.cache[BRIDGE_MOD].exports = {
 const realSwap = require.cache[SWAP_MOD].exports;
 let CHAIN_BAL = {};              // token → bigint, what balanceOf reports
 const BAL_CALLS = [];
+let PERMIT = { amount: 0n, expiration: 0n };
+const PERMIT_SENDS = [];
 require.cache[SWAP_MOD].exports = {
   ...realSwap,
+  permit2Allowance: async () => PERMIT,
+  sendTx: async (_wallet, tx) => {
+    assert.strictEqual(tx.to, RC.PERMIT2, "this fixture can only send Permit2 approvals");
+    PERMIT_SENDS.push(tx);
+    return { hash: "0xpermitrenewal" };
+  },
   balanceOf: async (_p, token, _owner, blockTag) => {
     BAL_CALLS.push({ token, blockTag });
     return CHAIN_BAL[token.toLowerCase()] ?? 0n;
@@ -83,6 +91,7 @@ function parked(job) {
   }));
   funding.configure({ dataDir: dir, demo: false, network: "mainnet" });
   BAL_CALLS.length = 0;
+  PERMIT_SENDS.length = 0;
 }
 
 (async () => {
@@ -207,6 +216,37 @@ function parked(job) {
     const fallback = await funding._spendableOf("eth", bal);
     assert.ok(fallback.sats >= 0n, "an unreadable fee must not throw");
     console.log("✓ gas reserve tracks the live fee (cheap gas no longer eats the deposit)");
+  }
+
+  /* Legacy jobs must also recheck approvals immediately before a new swap.
+     A pending swap is already handled from its receipt in cases 2 and 3. */
+  for (const remaining of [-1, 300, 1800]) {
+    parked({ status: "swap_usdt_vkoin", usdtSats: String(USDT_IN) });
+    RECEIPT = null;
+    PERMIT = { amount: USDT_IN, expiration: BigInt(Math.floor(Date.now() / 1000) + remaining) };
+    await funding.tick();
+    assert.strictEqual(funding.job(ACCOUNT).status, "approve_ur");
+    assert.strictEqual(PERMIT_SENDS.length, 0);
+    await funding.tick();
+    assert.strictEqual(PERMIT_SENDS.length, 1);
+    const decoded = new ethers.Interface(realSwap.PERMIT2_ABI).decodeFunctionData("approve", PERMIT_SENDS[0].data);
+    assert.strictEqual(decoded.token.toLowerCase(), RC.USDT.toLowerCase());
+    assert.strictEqual(decoded.spender.toLowerCase(), RC.UNIVERSAL_ROUTER.toLowerCase());
+    assert.strictEqual(decoded.amount, USDT_IN);
+    assert.ok(decoded.expiration > BigInt(Math.floor(Date.now() / 1000) + 1800 + 60));
+    RECEIPT = { status: 1, logs: [] };
+    await funding.tick();
+    assert.strictEqual(funding.job(ACCOUNT).status, "swap_usdt_vkoin");
+    assert.strictEqual(PERMIT_SENDS.length, 1);
+  }
+  console.log("✓ legacy jobs renew expired or near-expiry approvals for their entire swap deadline");
+  {
+    parked({ status: "approve_ur", usdtSats: String(USDT_IN) });
+    PERMIT = { amount: USDT_IN, expiration: BigInt(Math.floor(Date.now() / 1000) + 3600) };
+    await funding.tick();
+    assert.strictEqual(funding.job(ACCOUNT).status, "swap_usdt_vkoin");
+    assert.strictEqual(PERMIT_SENDS.length, 0);
+    console.log("✓ legacy jobs reuse approvals that cover the full deadline");
   }
 
   console.log("\nALL STALE-READ CHECKS PASSED");
