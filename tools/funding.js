@@ -36,8 +36,8 @@
    wants the recipient's signature anyway, the job falls back to a passkey
    tap; we don't guess which, the chain answers. Route B's final KoinDX swap
    always needs the passkey: it SPENDS vETH from the account. Custody is
-   transit-only — funds are server-held exactly while they cross, and land on
-   an account only the passkey can spend from.
+   server-held at transit addresses, including ETH retained after a sale.
+   KOIN lands on an account only its registered credentials can spend from.
 
    Jobs persist after every transition (crash/restart resumes from
    on-chain reality), amounts are read from actual balances (never
@@ -231,6 +231,12 @@ const v2 = fundingV2.create({ settings: S, provider: ethProvider, transit: (acco
     return [...byId.values()];
   },
 });
+
+// Trades share the existing private funding ledger and its single worker lock.
+const trade = require('./eth/trade').create({ settings: S, store: () => S.store, persist,
+  provider: ethProvider, transit: account => transitFor(account),
+  buyBusy: account => STARTING.has(account) || BUSY.has(account) || !!(job(account) && job(account).status !== 'done'),
+  invalidate: account => BAL_CACHE.delete(account) });
 
 function configure(opts) {
   Object.assign(S, opts || {});
@@ -660,6 +666,7 @@ function publicJob(j) {
 /** Start a swap of `amount` (default: everything spendable) of `asset`,
     through `route` for ETH ("B"|"C"; default: whichever quotes best). */
 async function start(account, args = {}) {
+  if (trade.blocks(account)) throw new Error("Finish the current sale or ETH withdrawal first");
   if (STARTING.has(account)) throw new Error("A conversion is already starting");
   STARTING.add(account);
   try { return await startUnlocked(account, args); }
@@ -805,6 +812,7 @@ async function requote(account, quoteId) {
   return result.job ? { job: publicJob(result.job) } : result;
 }
 async function resume(account) {
+  if (trade.blocks(account)) throw new Error("Finish the current sale or ETH withdrawal first");
   const j = job(account);
   if (j?.feePlan?.version === 2) return publicJob(await v2.resume(account));
   /* Retry is for a job that has failed OR one that has stopped moving. The
@@ -861,6 +869,7 @@ async function resume(account) {
   return publicJob(job(account));
 }
 function reset(account) {
+  if (trade.blocks(account)) throw new Error("Finish the current sale or ETH withdrawal first");
   const j = job(account);
   if (j && !TERMINAL.has(j.status)) throw new Error("A swap is still in progress");
   if (j && j.status !== "done" && j.ethTxHash) {
@@ -881,6 +890,7 @@ function reset(account) {
 /* ---------------- the driver ---------------- */
 
 async function tick() {
+  await trade.tick();
   for (const account of Object.keys(S.store.jobs)) {
     const j = job(account);
     if (!j || TERMINAL.has(j.status) || waitsForTap(j)) continue;
@@ -1577,6 +1587,8 @@ function finishRedeem(account, txid, note) {
 /** Operations for the step the job is waiting on — the server prepares,
     the PASSKEY authorizes, the chain verifies. */
 async function prepareTapOps(account) {
+  if (trade.needsTap(account)) return trade.prepareTap(account);
+  if (trade.blocks(account)) throw new Error("This trade is not waiting for a passkey");
   const j = job(account);
   if (!j) throw new Error("No swap in progress");
   if (j.status === "awaiting_redeem") {
@@ -1613,6 +1625,7 @@ async function prepareTapOps(account) {
 
 /** Called by the submit path after the passkey-signed step is mined. */
 function onTapDone(account, step, txid) {
+  if (step.startsWith("sell:")) return; // receipt-driven trade worker owns completion
   const j = job(account);
   if (!j) return;
   if (step === "redeem") {
@@ -1774,7 +1787,7 @@ async function status(account) {
   if (!t) return { enabled: false };
   const j = job(account);
   const out = {
-    enabled: true, demo: S.demo || undefined, ethAddress: t.ethAddress, job: publicJob(j),
+    enabled: true, demo: S.demo || undefined, ethAddress: t.ethAddress, job: publicJob(j), trade: trade.status(account), tradeBlocked: trade.blocks(account),
     /* The address always; whether we can convert from it, separately. */
     solAddress: t.solAddress || null, solRail: solRail(),
     caps: { eth: S.maxEth, stable: S.maxStable, sol: S.maxSol },
@@ -1798,7 +1811,7 @@ async function status(account) {
        Each keeps its own failure: the card gates the whole convert panel on
        `spendable`, so a quote or a float read that falls over must not take
        the amounts — and with them the way to convert — off the screen. */
-    const wantQuotes = !j || TERMINAL.has(j.status);
+    const wantQuotes = (!j || TERMINAL.has(j.status)) && !trade.blocks(account);
     const [spendable, quoted] = await Promise.all([
       Promise.all(FUNDABLE.map((a) => spendableOf(a, out.balances).then((sp) => sp.label)))
         .catch((e) => { out.balancesError = String(e.message || e).slice(0, 160); return null; }),
@@ -1914,7 +1927,7 @@ async function railHealth() {
 }
 
 module.exports = {
-  configure, enable, status, start, resume, requote, reset, quoteFor,
+  configure, enable, status, start, resume, requote, reset, quoteFor, trade,
   prepareTapOps, onTapDone, transitFor, job, publicJob,
   /* the driver, exposed so tests can step it without waiting on the timer */
   tick,

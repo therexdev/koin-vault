@@ -927,6 +927,7 @@
   if (WalletClient.canBuy) Fund.mount({
     api,
     signPrepared,
+    koinBalance: () => BALANCE_SATS,
     credentialId: () => (RECOVERY ? RECOVERY.credentialId : Passkey.storedId()),
     onKoinMoved: () => { void transactionFeed?.refresh(); paint(); },
   });

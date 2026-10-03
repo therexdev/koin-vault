@@ -816,7 +816,7 @@ api.prepare = async (body, ip) => {
 /** Broadcast a signed prepared transaction (sponsor co-signs as payer).
     Smart accounts sign with the passkey — the WebAuthn blob is checked for
     shape, credential and challenge here, then verified for real ON-CHAIN. */
-api.submit = async (body, _ip, surface = {}) => {
+api.submit = async (body, _ip, surface = {}, req) => {
   const known = PREPARED.get(String(body.ref || ''));
   if (!known || known.expires < Date.now()) throw httpError(400, 'this action expired — start it again');
   if (surface.android && known.fundingTap) throw httpError(403, 'Conversions are not available in the Android app');
@@ -832,6 +832,12 @@ api.submit = async (body, _ip, surface = {}) => {
   let txid;
   try {
     const submitOptions = { checkMana: !!known.fundingTap };
+    if (known.fundingTap?.step.startsWith('sell:')) {
+      const identity = walletBackend.approvalIdentity(req, CFG);
+      await dappAuth.verifyProof(known.address, known.txId, body.transaction.signatures?.[0], chain, identity);
+      submitOptions.beforeBroadcast = transaction => funding.trade.beforeKoinBroadcast(
+        known.fundingTap.account, known.fundingTap.step, transaction);
+    }
     txid = known.selfPaid
       ? await chain.submitSelfPaid(body.transaction, known.txId, known.address, veive.credentialsFor(known.address), submitOptions)
       : known.smart
@@ -959,6 +965,27 @@ api.fundRequote = async (body) => {
 api.fundReset = async (body) => {
   const account = fundAccount(body.credentialId);
   try { funding.reset(account); return { ok: true }; }
+  catch (e) { throw httpError(400, e.message); }
+};
+
+// Destination and amount come only from the server-held, passkey-bound intent.
+api.tradeQuote = async (body) => {
+  const account = fundAccount(body.credentialId);
+  try { return { ok: true, quote: await funding.trade.sellQuote(account, body.amount) }; }
+  catch (e) { throw httpError(400, e.message); }
+};
+api.tradePrepare = async (body, ip, _surface, req) => {
+  const account = fundAccount(body.credentialId);
+  if (rateLimited('trade-prepare:' + ip, 30, 60000)) throw httpError(429, 'Too many trade previews; try again shortly');
+  const identity = walletBackend.approvalIdentity(req, CFG);
+  try { return { ok: true, ...await funding.trade.prepare(account, body, identity) }; }
+  catch (e) { throw httpError(400, e.message); }
+};
+api.tradeSubmit = async (body, ip, _surface, req) => {
+  const account = fundAccount(body.credentialId);
+  if (rateLimited('trade-submit:' + ip, 30, 60000)) throw httpError(429, 'Too many trade approvals; try again shortly');
+  const identity = walletBackend.approvalIdentity(req, CFG);
+  try { return { ok: true, trade: await funding.trade.submit(account, String(body.ref || ''), body.signature, identity) }; }
   catch (e) { throw httpError(400, e.message); }
 };
 
@@ -1202,6 +1229,8 @@ const POST_ROUTES = {
   '/api/submit': api.submit,
   '/api/fund/enable': api.fundEnable, '/api/fund/start': api.fundStart,
   '/api/fund/quote': api.fundQuote,
+  '/api/fund/sell/quote': api.tradeQuote,
+  '/api/fund/trade/prepare': api.tradePrepare, '/api/fund/trade/submit': api.tradeSubmit,
   '/api/fund/prepare-step': api.fundPrepareStep,
   '/api/fund/requote': api.fundRequote, '/api/fund/resume': api.fundResume, '/api/fund/reset': api.fundReset,
   '/api/dapp/create': api.dappCreate, '/api/dapp/connect': api.dappConnect,

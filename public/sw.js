@@ -20,10 +20,10 @@
    ============================================================ */
 'use strict';
 
-const CACHE = 'bio-wallet-shell-v21';
+const CACHE = 'bio-wallet-shell-v22';
 const SHELL = [
   '/', '/index.html', '/css/wallet.css', '/manifest.webmanifest',
-  '/js/client.js', '/js/app.js', '/js/fund.js', '/js/passkey.js', '/js/recovery.js',
+  '/js/client.js', '/js/app.js', '/js/trade.js', '/js/fund.js', '/js/passkey.js', '/js/recovery.js',
   '/js/webauthn-wire.js', '/js/qr.js', '/js/receive.js', '/js/portfolio.js', '/js/ui.js',
   '/js/token-amounts.js', '/js/transactions.js',
   '/js/vendor/qrcode-generator.js',

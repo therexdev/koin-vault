@@ -48,12 +48,12 @@ function applySlippage(amount, slippageBps) {
   return (a * (10000n - bps)) / 10000n;
 }
 
-function swapPath(network = "mainnet") {
-  return [BRIDGE[network].veth, KOIN_KEY];
+function swapPath(network = "mainnet", reverse = false) {
+  return reverse ? [KOIN_KEY, BRIDGE[network].veth] : [BRIDGE[network].veth, KOIN_KEY];
 }
 
 // Quote vETH -> KOIN from live reserves. Read-only, no mana.
-async function quoteSwap({ amountInSats, slippageBps = DEFAULT_SLIPPAGE_BPS, network = "mainnet", provider } = {}) {
+async function quoteSwap({ amountInSats, slippageBps = DEFAULT_SLIPPAGE_BPS, network = "mainnet", provider, reverse = false } = {}) {
   const cfg = KOINDX[network];
   if (!cfg || !cfg.router) throw new Error(`KoinDX not configured for ${network}`);
   const veth = BRIDGE[network].veth;
@@ -74,6 +74,7 @@ async function quoteSwap({ amountInSats, slippageBps = DEFAULT_SLIPPAGE_BPS, net
     reserveIn = reserves.reserveB;
     reserveOut = reserves.reserveA;
   }
+  if (reverse) [reserveIn, reserveOut] = [reserveOut, reserveIn];
   const amountOut = getAmountOut(amountInSats, reserveIn, reserveOut);
   return {
     pool,
@@ -81,7 +82,7 @@ async function quoteSwap({ amountInSats, slippageBps = DEFAULT_SLIPPAGE_BPS, net
     amountOutMin: applySlippage(amountOut, slippageBps).toString(),
     reserveIn: String(reserveIn),
     reserveOut: String(reserveOut),
-    path: swapPath(network),
+    path: swapPath(network, reverse),
     slippageBps,
   };
 }
@@ -90,14 +91,14 @@ async function quoteSwap({ amountInSats, slippageBps = DEFAULT_SLIPPAGE_BPS, net
 // approve enumerates secp256k1 signatures and throws on a WebAuthn blob.
 // A nested call instead recognizes the account as the owner/caller. The
 // router then spends only this exact allowance and returns KOIN to it.
-async function opsKoindxSwap({ account, amountInSats, amountOutMin, network = "mainnet", provider } = {}) {
+async function opsKoindxSwap({ account, amountInSats, amountOutMin, network = "mainnet", provider, reverse = false } = {}) {
   const cfg = KOINDX[network];
   if (!cfg || !cfg.router) throw new Error(`KoinDX not configured for ${network}`);
   if (BigInt(amountInSats) <= 0n) throw new Error("amountIn must be greater than 0");
   if (BigInt(amountOutMin) <= 0n) throw new Error("amountOutMin must be set (slippage floor)");
   const veth = BRIDGE[network].veth;
 
-  const vethToken = new Contract({ id: veth, abi: TOKEN_ABI, provider });
+  const vethToken = new Contract({ id: reverse ? BRIDGE[network].koin : veth, abi: TOKEN_ABI, provider });
   const router = new Contract({ id: cfg.router, abi: PeripheryAbi, provider });
   const { operation: approve } = await vethToken.functions.approve(
     { owner: account, spender: cfg.router, value: String(amountInSats) }, { onlyOperation: true });
@@ -106,7 +107,7 @@ async function opsKoindxSwap({ account, amountInSats, amountOutMin, network = "m
     receiver: account,
     amountIn: String(amountInSats),
     amountOutMin: String(amountOutMin),
-    path: swapPath(network),
+    path: swapPath(network, reverse),
   }, { onlyOperation: true });
   return [await opExecuteUser(account, approve), await opExecuteUser(account, swap)];
 }
