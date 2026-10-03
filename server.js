@@ -429,6 +429,16 @@ const BUILD = (() => {
   return { version, commit: commit ? commit.slice(0, 12) : null };
 })();
 
+// Available even while the elected worker is unreachable. Only local process
+// health is reported here: never keys, accounts, request bodies or data paths.
+function runtimeStatus() {
+  const worker = walletWorker?.status() || { protocol: forwardWallet ? null : 2,
+    role: forwardWallet ? 'external-backend' : BOOTING ? 'starting' : 'standalone', ready: forwardWallet ? null : !BOOTING };
+  return { ok: !BOOT_ERROR && (forwardWallet ? true : worker.ready), version: BUILD.version, commit: BUILD.commit,
+    workerRecovery: 2, node: process.version, network: CFG.network, demo: DEMO,
+    uptimeSeconds: Math.floor(process.uptime()), rssMiB: Math.round(process.memoryUsage().rss / 1048576), worker };
+}
+
 let configFloatValue, configFloatAt = 0, configFloatPending = false;
 function configFloat() {
   if (Date.now() - configFloatAt < 60000) return configFloatValue;
@@ -1112,7 +1122,12 @@ function serveStatic(req, res, pathname) {
     headers['Last-Modified'] = lastMod;
     if (req.headers['if-modified-since'] === lastMod) { res.writeHead(304, headers); return res.end(); }
     res.writeHead(200, { ...headers, 'Content-Length': st.size });
-    fs.createReadStream(file).pipe(res);
+    const stream = fs.createReadStream(file);
+    stream.on('error', error => {
+      console.error('Static response failed:', error.code || 'READ_ERROR');
+      res.destroy();
+    });
+    stream.pipe(res);
   });
 }
 
@@ -1192,12 +1207,19 @@ const POST_ROUTES = {
 };
 
 async function handleRequest(req, res) {
-  const url = new URL(req.url, 'http://localhost');
-  const pathname = url.pathname.replace(/\/+$/, '') || '/';
   try {
+    let url;
+    try { url = new URL(req.url, 'http://localhost'); }
+    catch (_) { throw httpError(400, 'Invalid request URL'); }
+    const pathname = url.pathname.replace(/\/+$/, '') || '/';
     const surface = appSurface.requestSurface(pathname, req.headers);
     const apiPath = surface.apiPath;
     if (apiPath.startsWith('/api/')) {
+      if (apiPath === '/api/runtime' && req.method === 'GET') {
+        const out = runtimeStatus();
+        res.writeHead(out.ok ? 200 : 503, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        return res.end(JSON.stringify(out));
+      }
       if (walletWorker && !walletWorker.isOwner()) return await walletWorker.forward(req, res);
       if (apiPath.startsWith('/api/dapp/')) {
         const route = apiPath.slice('/api/dapp/'.length);
@@ -1259,7 +1281,9 @@ async function handleRequest(req, res) {
   } catch (e) {
     const status = e.status || 500;
     if (status >= 500) console.error(`[${new Date().toISOString()}]`, e.message || e);
-    res.writeHead(status, { 'Content-Type': 'application/json' });
+    if (res.destroyed || res.writableEnded) return;
+    if (res.headersSent) return res.destroy();
+    res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
     return res.end(JSON.stringify({ error: String(e.message || e).slice(0, 300) }));
   }
 }
@@ -1272,6 +1296,9 @@ const server = http.createServer(handleRequest);
 server.listen(CFG.port, () => {
   console.log(`serving:  http://localhost:${CFG.port} pid=${process.pid}`);
 });
+setInterval(() => {
+  console.log('wallet-runtime: ' + JSON.stringify(runtimeStatus()));
+}, 60000).unref();
 
 function applyMode() {
   /* The funding rails run live only on mainnet (the Vortex bridge, the

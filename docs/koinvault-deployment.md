@@ -64,14 +64,23 @@ unavailable metadata reads do not qualify; standard pairing still works.
 
 Live Vault processes now elect one account/funding worker per canonical
 `DATA_DIR` on the same host. Other HTTP processes forward API requests to that
-worker over an authenticated loopback connection. The active process owns the
+worker over an authenticated local connection. The active process owns the
 account store, funding ledger, signing requests and dapp sessions. The operating
 system releases its listener when it exits; a remaining process then takes over
 automatically and reloads the persistent data. No new package or environment
 variable is required.
 
+On Linux with Node 20.8 or later, worker protocol 2 uses an abstract Unix socket
+named from the full hash of the canonical data directory. This socket lives in
+the kernel, leaves no file to delete, and disappears when the process exits.
+It avoids the old shared TCP-port collision: `EADDRINUSE` is never considered
+evidence of an active wallet until that listener authenticates. Node 18 and
+hosts that deny abstract sockets use authenticated loopback TCP. Setting
+`WALLET_WORKER_TRANSPORT=tcp` explicitly chooses that fallback; normally leave
+it unset and run a current Node 22 or 24 release.
+
 The public HTTP listener uses the hosting launcher normally. The private
-loopback listener uses Node's underlying TCP listener because managed launchers
+listener uses Node's underlying network listener because managed launchers
 such as LiteSpeed and Passenger intercept `http.Server.listen()` and may ignore
 or reject a second call. Repeated restarts cannot repair that incompatibility.
 Startup verifies the private address before claiming ownership and reports a
@@ -82,19 +91,54 @@ the corresponding bind/connect error without recording request bodies or keys.
 `WALLET_WORKER_RESPONSE_LOST` means a request's result is uncertain; a forwarded
 POST is never replayed automatically.
 
-For the first deployment of this change:
+During a rolling deployment, a new worker respects the existing funding lock
+and can forward to an authenticated TCP owner until it exits. A new Unix owner
+also opens a TCP compatibility listener if that port is free, so older HTTP
+processes can still reach it. An unrelated TCP occupant is never sent wallet
+requests. A living owner or an uncertain funding lock is never forcibly removed.
+
+For deployment or recovery from the repeated worker-unreachable error:
 
 1. Stop the existing **KOIN Vault** app processes in Hostinger. The old release
    cannot participate in worker coordination. Do not stop the old wallet site
    or delete either site's data directory or funding lock while a worker lives.
 2. Deploy the latest `main` and start KOIN Vault with its existing environment
    and dedicated `DATA_DIR`.
-3. Check for `active wallet worker` in the runtime log. Additional processes may
+3. Use Node 22 or 24 and start command `npm start`. Preserve the current
+   `DATA_DIR`, signing keys and module addresses. Do not create a new data
+   directory to clear this error; it contains existing Ethereum transit keys
+   and unfinished swaps. Check for `active wallet worker` in the runtime log. Additional processes may
    report `forwarding to active wallet worker`; this is normal. Both log their
    PID and resolved data directory. `waiting for previous worker pid=...` means
    an old process still owns the directory and must finish exiting.
-4. Confirm `/api/health` returns HTTP 200 with `ok:true`, `demo:false`, and
-   `network:mainnet`. Check KOIN and VHP activity and each account explorer link.
+4. Run `npm run check:production` or open both
+   `https://koinvault.app/api/runtime` and `https://koinvault.app/api/health`.
+   Runtime must report `workerRecovery:2`, `worker.ready:true`; health must
+   return HTTP 200 with `ok:true`, `demo:false`, and `network:mainnet`.
+   The command also verifies the passkey RP ID and exits nonzero on a failed
+   check. It only reads public endpoints and never signs or sends funds.
+5. Reopen the wallet and sign in. For the interrupted conversion, choose
+   **Retry** on its existing job after the server is healthy.
+
+`/api/runtime` is answered by the receiving HTTP process before worker
+forwarding or startup gating. It stays available with HTTP 503 diagnostics when
+the main wallet API cannot start. It includes the release marker, Node version,
+uptime, memory, worker role, transport and last failure code/stage. It excludes
+keys, account information, request bodies, physical data paths and private
+endpoint addresses. A standalone forwarding frontend reports `external-backend`;
+check the owning backend's runtime endpoint separately.
+
+Every minute, `wallet-runtime:` logs the same bounded diagnostic summary for
+hosting resource/crash investigation. If the repair is deployed and readiness
+still fails, preserve the runtime JSON plus the `worker:` and
+`Wallet initialization failed:` log lines. `FUNDING_WORKER_BUSY` identifies a
+still-running or uncertain previous owner; a bind denial reports its OS code;
+`WALLET_WORKER_IDENTITY` identifies an unrelated or differently configured
+listener. Do not send environment dumps or wallet data files for diagnosis.
+
+Malformed public URLs return 400, failed static reads close only their response,
+and rejected private request handlers return an error without terminating the
+wallet worker. Forwarded POST requests are still sent at most once.
 
 The coordinator never retries a forwarded POST after an uncertain response.
 An owner restart can still invalidate pending, in-memory signing or dapp
