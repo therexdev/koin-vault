@@ -247,9 +247,8 @@ A deposit bridged before that field was set carries an empty relayer and can
 only be claimed by its recipient; those fall back to a **passkey** tap, and the
 job says so rather than spending mana finding out. Route B's final KoinDX swap
 always needs the passkey: it *spends* vETH from the account.
-`node tests/redeem-fallback.test.js` pins every branch. Funds are custodial
-only while in transit, and land on an account only the passkey can spend from.
-Keep transit amounts modest.
+`node tests/redeem-fallback.test.js` pins every branch. Deposits and ETH sale proceeds at the transit addresses are server-custodied.
+KOIN delivered to the smart account can only be spent by its registered credentials.
 
 Stablecoin-only deposits need a little ETH for Ethereum gas; set
 `ETH_GAS_SPONSOR_KEY` (an Ethereum private key holding some ETH) and the app
@@ -307,6 +306,16 @@ over after the owner exits. See the [restart notes](docs/koinvault-deployment.md
 See [the implementation and rollout notes](docs/eth-gas-recovery.md) for
 configuration, existing-job handling and verification requirements.
 
+## Sell KOIN to ETH and withdraw Ethereum
+
+The Trade tab now supports KOIN → native ETH through the existing Vortex /
+KoinDX and Vortex / Uniswap routes. ETH remains at the same Ethereum address,
+shown beside its QR code. **Withdraw Ethereum** opens a passkey-approved
+recipient/amount review. **Max** subtracts network gas from the sending balance.
+Sales require ETH upfront for the quoted gas budget. See the
+[implementation and rollout notes](docs/koin-to-eth.md) for limits, persistence,
+fees and validation status.
+
 ## The app: one screen, three tabs
 
 The wallet is laid out like a phone wallet and installs as one (manifest,
@@ -317,7 +326,7 @@ and `show()` still hides the lot with one attribute.
 | tab | what is on it |
 |---|---|
 | **Home** | total in dollars, a KOIN tile and a VHP tile, your short address (tap to copy), the protection line, Receive · Send · Buy, the token list (KOIN, VHP, any token you add by contract address) and, once funding is on, the "Waiting to convert · Ethereum" rows |
-| **Buy** | the Fund card as three steps — Deposit (QR + address + the custody note), Convert (amount, routes, best marked), Land (progress, the passkey landing button). A green dot on the tab while a job runs; it pulses when a tap is needed |
+| **Trade** | Ethereum balance, withdrawal popup, KOIN → ETH sell route comparison, and the Fund card as three steps — Deposit (QR + address + the custody note), Convert (amount, routes, best marked), Land (progress, the passkey landing button). A green dot on the tab while a job runs; it pulses when a tap is needed |
 | **Security** | a Protection meter and checklist (passkey · backup passkey · recovery kit, each tappable), the Account card (full address, network, explorer, Show QR), Backups (unchanged), the App card (install / offline), the explainer and Sign out |
 
 Four bottom sheets do the rest: **Token** (balance, price, mana for KOIN,
@@ -773,7 +782,10 @@ WebAuthn requires HTTPS (any real domain qualifies; `localhost` works for dev).
 - **The server holds**: the sponsor key, and each account's bootstrap key
   (`data/accounts.json`, mode 600) — powerless after bootstrap, kept to heal
   interrupted signups. It cannot move an active account: with the validator
-  installed, the chain accepts only passkey-signed transactions.
+  installed, the chain accepts only passkey-signed transactions. The server also
+  holds transit keys in `funding.json` for browser/PWA conversions and retained
+  ETH balances. Those funds are custodial; withdrawals require a fresh proof
+  from a credential currently registered to the Koinos account.
 - **Recovery**: passkeys sync via iCloud Keychain / Google Password Manager,
   and the account survives any single loss once a backup passkey or the
   recovery kit is registered (see *Backups* above). Nudge users to add one —

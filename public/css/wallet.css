@@ -658,3 +658,14 @@ details.card[open] > summary { margin-bottom: 6px; }
 #dapp-blocked { margin-top: 1rem; }
 #dapp-blocked summary { cursor: pointer; }
 #dapp-blocked-list p { overflow-wrap: anywhere; }
+
+/* Ethereum balance and withdrawal review share the Trade surface. */
+.eth-wallet-balance { text-align: center; font-size: 22px; font-weight: 650; margin: 16px 0; overflow-wrap: anywhere; }
+.eth-dialog { color: var(--text); background: var(--sheet); border: 1px solid var(--line-strong); border-radius: 22px; padding: 22px; width: min(440px, calc(100vw - 32px)); max-height: 88dvh; overflow-y: auto; }
+.eth-dialog::backdrop { background: rgb(0 0 0 / .65); }
+.eth-dialog input { width: 100%; min-width: 0; }
+.eth-dialog label { display: block; margin: 14px 0 6px; }
+.eth-dialog #btn-eth-close { float: right; }
+.eth-address, .eth-review { overflow-wrap: anywhere; }
+.eth-review { white-space: pre-line; line-height: 1.65; margin: 16px 0; }
+#sell-koin-card .cta.wide { margin-top: 12px; }

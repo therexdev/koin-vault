@@ -76,14 +76,17 @@
   <p>These see the network requests the app makes, including your IP address, as
   any website you visit would.</p>
 
-  <h2>Funds in transit (browser/PWA only)</h2>
+  <h2>Conversion and Ethereum balances (browser/PWA only)</h2>
   <p>The Android app provides wallet functions only. It does not offer buying,
   swapping, or conversion transit wallets.</p>
   <p>If you convert ETH, USDC, USDT or SOL into KOIN in the browser/PWA, the money moves through
   addresses the app controls on your behalf until it lands as KOIN in your
-  account. This is stated in the app before you start. Everything else you
-  hold is controlled by your passkey and by no one else — we cannot move it,
-  freeze it, or recover it.</p>
+  account. Selling KOIN for ETH sends the proceeds to that same app-controlled
+  Ethereum address, where they remain until you withdraw or convert them. ETH
+  withdrawals require approval from a credential registered to your Koinos
+  account, and pay network gas from the Ethereum balance. The app holds the
+  Ethereum private key; that balance is custodial. Tokens in your Koinos smart
+  account remain controlled by your registered credentials.</p>
 
   <h2>Children</h2>
   <p>This app is not directed at children under 13, and we do not knowingly

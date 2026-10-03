@@ -246,5 +246,6 @@ module.exports = {
   MAX_UINT256,
   MAX_UINT160,
   PERMIT2_ABI,
+  SWAP_ROUTER_ABI,
   UR_ABI,
 };

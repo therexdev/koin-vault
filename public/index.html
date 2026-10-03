@@ -133,7 +133,7 @@
         <button class="action" id="btn-open-send" type="button"><span class="circle"><svg class="ic"><use href="#i-send"/></svg></span><span>Send</span></button>
         <button class="action" id="btn-connect-app" type="button"><span class="circle"><svg class="ic"><use href="#i-qr"/></svg></span><span>Connect</span></button>
         <!-- WEB_ONLY_START -->
-        <button class="action" id="btn-open-buy" type="button"><span class="circle"><svg class="ic"><use href="#i-plus"/></svg></span><span>Buy</span></button>
+        <button class="action" id="btn-open-buy" type="button"><span class="circle"><svg class="ic"><use href="#i-plus"/></svg></span><span>Trade</span></button>
         <!-- WEB_ONLY_END -->
       </div>
 
@@ -178,8 +178,8 @@
     <!-- ── Buy: the Fund card, id for id ── -->
     <div id="tab-convert" class="tab" role="tabpanel" aria-labelledby="tabbtn-convert" hidden>
       <div class="page-head">
-        <h2>Buy KOIN <span class="tag warn" id="buy-sim-chip" hidden>Simulated</span></h2>
-        <p class="sub">Convert ETH, USDC, USDT or SOL you already hold — from any wallet or exchange — into KOIN. One passkey tap lands it.</p>
+        <h2>Trade <span class="tag warn" id="buy-sim-chip" hidden>Simulated</span></h2>
+        <p class="sub">Buy KOIN with ETH, USDC, USDT or SOL, or sell KOIN for native ETH.</p>
       </div>
 
       <div class="card" id="fund-setup">
@@ -194,7 +194,9 @@
           <div class="step-head"><span class="step-n">1</span><span class="k">Deposit</span><span class="fund-net">Ethereum mainnet</span></div>
           <div class="qr-tile small" id="fund-eth-qr"><span class="skel" aria-hidden="true"></span></div>
           <button class="addr fund-addr" id="fund-eth-addr" type="button" title="Copy Ethereum address"></button>
-          <p class="hint center">Tap the address to copy. ETH, USDC or USDT.</p>
+          <p class="hint center">Tap the address to copy. Ethereum mainnet only.</p>
+          <div class="eth-wallet-balance" id="trade-eth-balance">Loading ETH balance…</div>
+          <button class="ghost wide" id="btn-eth-withdraw" type="button">Withdraw Ethereum</button>
           <div class="fund-chain" id="fund-sol-block" hidden>
             <div class="step-head"><span class="k">Or with SOL</span><span class="fund-net sol">Solana mainnet</span></div>
             <div class="qr-tile small" id="fund-sol-qr"><span class="skel" aria-hidden="true"></span></div>
@@ -203,10 +205,25 @@
             <p class="hint sol-off" id="fund-sol-note" hidden></p>
           </div>
           <div class="custody-note">Send ETH, USDC or USDT to the Ethereum address and SOL to the Solana address — nothing else.
-            In-transit funds are held by the app's funding key until they land as KOIN on your smart account, so keep
-            amounts modest. Other tokens sent to either address are lost.</div>
+            Funds at these addresses are held by the app's funding key. ETH from a sale stays at your Ethereum address until you withdraw or convert it. Only send the supported tokens.</div>
           <div class="fund-balances" id="fund-balances"></div>
         </div>
+
+        <div class="card" id="sell-koin-card">
+          <h3>Sell KOIN → ETH</h3>
+          <p class="hint">Compare the same routes in reverse. Native ETH arrives at your Ethereum address above.</p>
+          <label for="sell-koin-amount">KOIN to sell</label>
+          <div class="fund-amount-row"><input id="sell-koin-amount" inputmode="decimal" autocomplete="off" placeholder="0.00"><button class="ghost" id="btn-sell-max" type="button">Max</button></div>
+          <button class="cta wide" id="btn-sell-quote" type="button">Compare sell routes</button>
+          <div id="sell-routes" aria-live="polite"></div>
+        </div>
+        <div class="status" id="trade-progress" hidden role="status" aria-live="polite">
+          <strong id="trade-progress-label"></strong><p class="hint" id="trade-progress-detail"></p>
+          <a id="trade-tx-link" target="_blank" rel="noopener" hidden>View Ethereum transaction ↗</a>
+          <div class="btn-row"><button class="cta small lock" id="btn-trade-tap" type="button" hidden>Confirm with passkey</button>
+          <button class="ghost" id="btn-trade-retry" type="button" hidden>Retry</button><button class="ghost" id="btn-trade-cancel" type="button" hidden>Cancel sale</button></div>
+        </div>
+        <div class="status" id="trade-message" role="status" aria-live="polite" hidden></div>
 
         <div class="card">
           <div class="step-head"><span class="step-n">2</span><span class="k">Convert</span></div>
@@ -236,6 +253,22 @@
       </div>
       <div class="status" id="fund-status" role="status" aria-live="polite" hidden></div>
       <p class="hint center">Quotes are live; the best route is marked.</p>
+      <dialog id="eth-withdraw-dialog" class="eth-dialog" aria-labelledby="eth-withdraw-title">
+        <button class="ghost" id="btn-eth-close" type="button" aria-label="Close withdrawal">Close</button>
+        <h3 id="eth-withdraw-title">Withdraw Ethereum</h3>
+        <p class="hint eth-address" id="eth-withdraw-from"></p>
+        <div id="eth-withdraw-fields">
+          <label for="eth-withdraw-to">Receiving Ethereum address</label>
+          <input id="eth-withdraw-to" placeholder="0x…" autocomplete="off" spellcheck="false">
+          <label for="eth-withdraw-amount">Amount in ETH</label>
+          <div class="fund-amount-row"><input id="eth-withdraw-amount" inputmode="decimal" autocomplete="off" placeholder="0.00"><button class="ghost" id="btn-eth-max" type="button">Max</button></div>
+          <p class="hint">Max uses your balance minus network gas. Gas is paid from the sending address.</p>
+          <button class="ghost wide" id="btn-eth-preview" type="button">Review withdrawal</button>
+        </div>
+        <div class="status eth-review" id="eth-withdraw-review" hidden></div>
+        <button class="cta wide lock" id="btn-eth-confirm" type="button" hidden>Confirm withdrawal with passkey</button>
+        <p class="hint" id="eth-withdraw-message" role="status" aria-live="polite"></p>
+      </dialog>
     </div>
 
     <!-- WEB_ONLY_END -->
@@ -550,7 +583,7 @@
 <nav id="tabbar" role="tablist" aria-label="Wallet" hidden>
   <button class="tabbtn" id="tabbtn-home" role="tab" aria-selected="true" aria-controls="tab-home" type="button"><span class="ico"><svg class="ic"><use href="#i-wallet"/></svg></span><span>Home</span></button>
   <!-- WEB_ONLY_START -->
-  <button class="tabbtn" id="tabbtn-convert" role="tab" aria-selected="false" aria-controls="tab-convert" type="button" tabindex="-1"><span class="ico"><svg class="ic"><use href="#i-plus"/></svg><span class="tabdot" id="tabdot-convert" hidden></span></span><span>Buy</span></button>
+  <button class="tabbtn" id="tabbtn-convert" role="tab" aria-selected="false" aria-controls="tab-convert" type="button" tabindex="-1"><span class="ico"><svg class="ic"><use href="#i-plus"/></svg><span class="tabdot" id="tabdot-convert" hidden></span></span><span>Trade</span></button>
   <!-- WEB_ONLY_END -->
   <button class="tabbtn" id="tabbtn-security" role="tab" aria-selected="false" aria-controls="tab-security" type="button" tabindex="-1"><span class="ico"><svg class="ic"><use href="#i-shield"/></svg><span class="tabdot" id="tabdot-security" hidden></span></span><span>Security</span></button>
 </nav>
@@ -561,6 +594,7 @@
 <script src="/js/passkey.js"></script>
 <script src="/js/recovery.js"></script>
 <!-- WEB_ONLY_START -->
+<script src="/js/trade.js"></script>
 <script src="/js/fund.js"></script>
 <!-- WEB_ONLY_END -->
 <script src="/js/qr.js"></script>

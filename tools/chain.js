@@ -746,7 +746,7 @@ async function prepareSelfPaidTx(accountAddr, ops, { rcLimit = K.rcLimit } = {})
 
 /** Broadcast a self-paid transaction: the passkey blob is the ONLY
     signature — the sponsor deliberately does not co-sign. */
-async function submitSelfPaid(signedTx, preparedId, accountAddr, expectedCredentialIds, { checkMana = false } = {}) {
+async function submitSelfPaid(signedTx, preparedId, accountAddr, expectedCredentialIds, { checkMana = false, beforeBroadcast } = {}) {
   if (!signedTx || signedTx.id !== preparedId) throw new Error('transaction does not match the prepared action');
   if (Transaction.computeTransactionId(signedTx.header) !== preparedId) throw new Error('transaction header was altered');
   const sigs = (signedTx.signatures || []).slice();
@@ -762,6 +762,7 @@ async function submitSelfPaid(signedTx, preparedId, accountAddr, expectedCredent
     if (checkMana) await assertTransactionMana(clean);
     const tx = new Transaction({ provider: provider() });
     tx.transaction = clean;
+    if (beforeBroadcast) await beforeBroadcast(clean);
     try { await sendTolerant(tx); }
     catch (e) {
       const verdict = pre.ok === true ? 'accepted' : pre.error ? `unreadable: ${pre.error}` : 'no verdict';
@@ -802,7 +803,7 @@ async function ensureManaFor(accountAddr, rcLimitSats) {
   return { toppedUp: true, topUpSats: short.toString(), txId };
 }
 
-async function submitSmartCosigned(signedTx, preparedId, accountAddr, expectedCredentialIds, { checkMana = false } = {}) {
+async function submitSmartCosigned(signedTx, preparedId, accountAddr, expectedCredentialIds, { checkMana = false, beforeBroadcast } = {}) {
   if (!signedTx || signedTx.id !== preparedId) throw new Error('transaction does not match the prepared action');
   const recomputed = Transaction.computeTransactionId(signedTx.header);
   if (recomputed !== preparedId) throw new Error('transaction header was altered');
@@ -841,6 +842,7 @@ async function submitSmartCosigned(signedTx, preparedId, accountAddr, expectedCr
     clean.signatures = clean.signatures.concat(sigs);
     const tx = new Transaction({ provider: provider() });
     tx.transaction = clean;
+    if (beforeBroadcast) await beforeBroadcast(clean);
     try { await sendTolerant(tx); }
     catch (e) {
       /* The pre-flight said yes (or couldn't tell) and the chain still said

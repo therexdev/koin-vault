@@ -20,6 +20,7 @@ const html = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'),
 /* Every id a script dereferences. Grouped by owner so a removal is easy to
    trace back to the code that would break. */
 const IDS = {
+  'trade.js': [...new Set([...fs.readFileSync(path.join(__dirname, '..', 'public/js/trade.js'), 'utf8').matchAll(/\$\('#([a-z-]+)'\)/g)].map(m => m[1]))],
   'transactions.js': ['transactions', 'transactions-heading', 'transaction-list', 'transaction-note', 'btn-more-transactions'],
   'app.js (existing)': [
     'demo-note', 'sym', 'sym2', 'btn-signout', 'btn-go', 'no-passkey', 'alt-unlock',
@@ -83,7 +84,7 @@ const IDS = {
   ],
 };
 
-const SCRIPT_ORDER = ['client', 'webauthn-wire', 'passkey', 'recovery', 'fund', 'qr', 'receive', 'portfolio', 'token-amounts', 'ui', 'transactions', 'app'];
+const SCRIPT_ORDER = ['client', 'webauthn-wire', 'passkey', 'recovery', 'trade', 'fund', 'qr', 'receive', 'portfolio', 'token-amounts', 'ui', 'transactions', 'app'];
 
 /* Elements that must sit INSIDE #view-wallet so show() hides them with it. */
 const INSIDE_WALLET = [
