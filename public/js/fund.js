@@ -97,6 +97,7 @@ const Fund = (() => {
   function mount(ctx) {
     if (typeof WalletClient !== 'undefined' && !WalletClient.canBuy) return;
     CTX = ctx;
+    if (typeof Trade !== 'undefined') Trade.mount(ctx);
     $('#btn-fund-enable').addEventListener('click', refresh);
     $('#fund-eth-addr').addEventListener('click', () => copyAddr('eth'));
     opt('#fund-sol-addr', (n) => n.addEventListener('click', () => copyAddr('sol')));
@@ -131,6 +132,7 @@ const Fund = (() => {
   /* Sign-out: nothing of the previous account survives into the next —
      neither the state nor what render() wrote on screen. */
   function forget() {
+    if (typeof Trade !== 'undefined') Trade.forget();
     stop(); LAST = null; LAST_JOB_STATUS = null; QR_SHOWN = null; QR_SHOWN_SOL = null;
     $('#fund-setup').hidden = false; $('#fund-body').hidden = true;
     $('#fund-eth-addr').textContent = ''; $('#fund-balances').innerHTML = ''; $('#fund-assets').innerHTML = '';
@@ -164,7 +166,7 @@ const Fund = (() => {
       /* Never fail silently — a dead-looking button is worse than a reason. */
       if (e.status !== 404) say(e.message || 'Funding is unavailable right now', 'err');
     }
-    const active = LAST && LAST.job && !['done', 'error'].includes(LAST.job.status);
+    const active = LAST && (LAST.tradeBlocked || (LAST.job && !['done', 'error'].includes(LAST.job.status)));
     TIMER = setTimeout(refresh, active ? 4000 : 15000);
   }
 
@@ -354,6 +356,7 @@ const Fund = (() => {
   const opt = (sel, fn) => { const n = $(sel); if (n) fn(n); };
 
   function render(st) {
+    if (typeof Trade !== 'undefined') Trade.render(st);
     $('#fund-setup').hidden = !!st.enabled;
     $('#fund-body').hidden = !st.enabled;
     opt('#buy-sim-chip', (n) => { n.hidden = !st.demo; });
@@ -410,7 +413,7 @@ const Fund = (() => {
       const tag = st.demo ? ' <span class="stat-sample">sample</span>' : '';
       const sp = st.spendable || {};
       const can = (a) => Number(sp[a]) > 0;
-      const showEth = !!b && can('eth');
+      const showEth = !!b && Number(b.eth) > 0;
       const showStable = !!b && (can('usdc') || can('usdt'));
       /* Their money, shown whether or not this host can convert it. */
       const showSol = !!b && b.sol != null && can('sol');
@@ -481,10 +484,10 @@ const Fund = (() => {
     }
 
     const j = st.job;
-    const jobActive = j && !['done', 'error'].includes(j.status);
+    const jobActive = st.tradeBlocked || (j && !['done', 'error'].includes(j.status));
     $('#fund-idle').hidden = !!jobActive || (j && j.status === 'error');
-    $('#fund-job').hidden = !j;
-    opt('#fund-convert-busy', (n) => { n.hidden = !$('#fund-idle').hidden; });
+    $('#fund-job').hidden = !j || !!st.tradeBlocked;
+    opt('#fund-convert-busy', (n) => { n.hidden = !$('#fund-idle').hidden; n.textContent = st.tradeBlocked ? 'A sale or withdrawal is in progress above.' : 'A conversion is in progress — see step 3.'; });
     opt('#fund-land-idle', (n) => { n.hidden = !!j; });
     opt('#tabdot-convert', (n) => { n.hidden = !j; n.classList.toggle('pulse', !!(j && needsTap(j))); });
     /* KOIN landing while the person is on another tab deserves a word. */

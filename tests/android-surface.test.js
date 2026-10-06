@@ -56,7 +56,7 @@ const template = fs.readFileSync(path.join(root, 'public/index.html'), 'utf8');
       assert.match(html, /data-wallet-client="android"/);
       assert.match(html, /id="btn-open-receive"/);
       assert.match(html, /id="tab-security"/);
-      assert.doesNotMatch(html, /id="(?:tab-convert|tabbtn-convert|btn-open-buy|fund-[^"]+)"|src="\/js\/fund.js|use Buy|Buy KOIN/);
+      assert.doesNotMatch(html, /id="(?:tab-convert|tabbtn-convert|btn-open-buy|fund-[^"]+)"|src="\/js\/(?:fund|trade).js|id="(?:sell-koin-card|eth-withdraw-dialog)"|use Buy|Buy KOIN/);
       assert.equal(res.headers.get('set-cookie'), null, 'no cross-surface cookie');
     }
     for (const url of ['/', '/?source=pwa', '/?tab=convert']) {
@@ -80,7 +80,7 @@ const template = fs.readFileSync(path.join(root, 'public/index.html'), 'utf8');
     assert.equal(aCfg.features.buy, false); assert.equal(wCfg.features.buy, true);
     assert.equal(aCfg.float, undefined); assert.equal(aCfg.solRail, undefined);
     assert.equal((await (await fetch(base + '/android/api/health?rail=1')).json()).rail, undefined);
-    for (const route of ['status', 'enable', 'quote', 'start', 'prepare-step', 'resume', 'reset', 'future-endpoint']) {
+    for (const route of ['status', 'enable', 'quote', 'start', 'prepare-step', 'resume', 'reset', 'sell/quote', 'trade/prepare', 'trade/submit', 'future-endpoint']) {
       const method = route === 'status' ? 'GET' : 'POST';
       for (const [prefix, headers] of [['/android', {}], ['', { 'X-Wallet-Client': 'android' }], ['', { Referer: base + '/android/' }]]) {
         const res = await fetch(base + prefix + '/api/fund/' + route, { method, headers });
