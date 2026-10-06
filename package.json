@@ -11,7 +11,7 @@
     "keygen": "node tools/keygen.js",
     "infra-keygen": "node tools/infra-keygen.js",
     "infra-deploy": "node tools/infra-deploy.js",
-    "test:trade": "node tests/eth-withdrawal.test.js && node tests/eth-trade.test.js && node tests/sell-routes.test.js"
+    "test:trade": "node tests/eth-withdrawal.test.js && node tests/eth-trade.test.js && node tests/sell-routes.test.js && node tests/trade-ui.test.js"
   },
   "engines": {
     "node": ">=18"

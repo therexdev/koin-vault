@@ -175,49 +175,82 @@
     </div>
 
     <!-- WEB_ONLY_START -->
-    <!-- ── Buy: the Fund card, id for id ── -->
+    <!-- ── Trade ── -->
     <div id="tab-convert" class="tab" role="tabpanel" aria-labelledby="tabbtn-convert" hidden>
       <div class="page-head">
         <h2>Trade <span class="tag warn" id="buy-sim-chip" hidden>Simulated</span></h2>
-        <p class="sub">Buy KOIN with ETH, USDC, USDT or SOL, or sell KOIN for native ETH.</p>
       </div>
 
+      <nav class="trade-tabs" aria-label="Trade options">
+        <button id="btn-trade-buy" type="button" aria-pressed="true">Buy KOIN</button>
+        <button id="btn-trade-sell" type="button" aria-pressed="false">Sell KOIN</button>
+      </nav>
+      <div class="trade-page-head">
+        <h3 id="trade-page-title">Buy KOIN</h3>
+        <p class="hint" id="trade-page-description">Choose a currency below to deposit funds and compare routes to KOIN.</p>
+      </div>
+      <section class="card trade-balances-card" aria-labelledby="trade-balances-heading">
+        <div class="section-head"><h3 id="trade-balances-heading">Current Balances</h3><button class="linkish accent" id="btn-trade-refresh" type="button">Refresh</button></div>
+        <div id="trade-current-balances" class="trade-balances"></div>
+        <p class="hint" id="trade-balances-note" role="status">Loading your balances…</p>
+        <div class="fund-balances" id="fund-balances"></div>
+      </section>
+
       <div class="card" id="fund-setup">
-        <div class="step-head"><span class="step-n">1</span><span class="k">Deposit</span></div>
-        <p class="hint">You need ETH, USDC, USDT or SOL in another wallet or exchange first. This account gets its
-          own Ethereum and Solana deposit addresses; whatever you send there is converted to KOIN here.</p>
-        <button class="ghost wide" id="btn-fund-enable" type="button">Show my deposit addresses</button>
+        <p class="hint">Loading your trade account and deposit addresses.</p>
+        <button class="ghost wide" id="btn-fund-enable" type="button">Try again</button>
       </div>
 
       <div id="fund-body" hidden>
-        <div class="card">
-          <div class="step-head"><span class="step-n">1</span><span class="k">Deposit</span><span class="fund-net">Ethereum mainnet</span></div>
-          <div class="qr-tile small" id="fund-eth-qr"><span class="skel" aria-hidden="true"></span></div>
-          <button class="addr fund-addr" id="fund-eth-addr" type="button" title="Copy Ethereum address"></button>
-          <p class="hint center">Tap the address to copy. Ethereum mainnet only.</p>
-          <div class="eth-wallet-balance" id="trade-eth-balance">Loading ETH balance…</div>
-          <button class="ghost wide" id="btn-eth-withdraw" type="button">Withdraw Ethereum</button>
-          <div class="fund-chain" id="fund-sol-block" hidden>
-            <div class="step-head"><span class="k">Or with SOL</span><span class="fund-net sol">Solana mainnet</span></div>
-            <div class="qr-tile small" id="fund-sol-qr"><span class="skel" aria-hidden="true"></span></div>
-            <button class="addr fund-addr" id="fund-sol-addr" type="button" title="Copy Solana address"></button>
-            <p class="hint center">Tap the address to copy. SOL only — it is converted to KOIN through Wormhole and Vortex.</p>
-            <p class="hint sol-off" id="fund-sol-note" hidden></p>
+        <section id="trade-flow" aria-labelledby="trade-flow-title" hidden>
+          <div class="trade-flow-head"><h3 id="trade-flow-title" tabindex="-1"></h3><button class="linkish" id="btn-trade-close-flow" type="button">Close</button></div>
+          <p class="hint" id="trade-flow-note"></p>
+          <div class="card" id="trade-deposit-card">
+            <div class="step-head"><span class="k" id="trade-deposit-title">Deposit or withdraw</span></div>
+            <details class="trade-deposit" id="fund-eth-block">
+              <summary id="fund-eth-label">Deposit ETH</summary>
+              <span class="fund-net">Ethereum mainnet</span>
+              <div class="qr-tile small" id="fund-eth-qr"><span class="skel" aria-hidden="true"></span></div>
+              <button class="addr fund-addr" id="fund-eth-addr" type="button" title="Copy Ethereum address"></button>
+              <p class="hint center" id="fund-eth-note">Tap the address to copy. Ethereum mainnet only.</p>
+            </details>
+            <details class="trade-deposit" id="fund-sol-block" hidden>
+              <summary>Deposit SOL</summary>
+              <span class="fund-net sol">Solana mainnet</span>
+              <div class="qr-tile small" id="fund-sol-qr"><span class="skel" aria-hidden="true"></span></div>
+              <button class="addr fund-addr" id="fund-sol-addr" type="button" title="Copy Solana address"></button>
+              <p class="hint center">Tap the address to copy. Send only SOL on Solana.</p>
+              <p class="hint sol-off" id="fund-sol-note" hidden></p>
+            </details>
+            <div id="trade-eth-actions" hidden>
+              <div class="eth-wallet-balance" id="trade-eth-balance">Loading ETH balance…</div>
+              <p class="hint center">At your Ethereum deposit address</p>
+              <button class="ghost wide" id="btn-eth-withdraw" type="button">Withdraw Ethereum</button>
+            </div>
+            <p class="hint" id="trade-withdraw-note" hidden></p>
+            <p class="hint">Funds at these deposit addresses are held by the app's funding key until converted or withdrawn.</p>
           </div>
-          <div class="custody-note">Send ETH, USDC or USDT to the Ethereum address and SOL to the Solana address — nothing else.
-            Funds at these addresses are held by the app's funding key. ETH from a sale stays at your Ethereum address until you withdraw or convert it. Only send the supported tokens.</div>
-          <div class="fund-balances" id="fund-balances"></div>
-        </div>
 
-        <div class="card" id="sell-koin-card">
+        <div class="card" id="sell-koin-card" hidden>
           <h3>Sell KOIN → ETH</h3>
-          <p class="hint">Compare the same routes in reverse. Native ETH arrives at your Ethereum address above.</p>
+          <p class="hint">Compare routes to native ETH. It arrives at your Ethereum address, ready to withdraw.</p>
           <label for="sell-koin-amount">KOIN to sell</label>
           <p class="hint">Live testing: up to 10,000 KOIN per sale.</p>
           <div class="fund-amount-row"><input id="sell-koin-amount" inputmode="decimal" autocomplete="off" placeholder="0.00"><button class="ghost" id="btn-sell-max" type="button">Max</button></div>
           <button class="cta wide" id="btn-sell-quote" type="button">Compare sell routes</button>
           <div id="sell-routes" aria-live="polite"></div>
         </div>
+
+        <div class="card" id="trade-buy-card" hidden>
+          <div class="step-head"><span class="k">Compare routes &amp; buy KOIN</span></div>
+          <div id="fund-idle">
+            <div id="fund-assets"></div>
+            <p class="hint" id="fund-empty">Waiting for a deposit — balances appear here within a minute of confirming on Ethereum.</p>
+          </div>
+          <p class="hint" id="fund-convert-busy" hidden>A conversion is in progress — see the progress below.</p>
+        </div>
+        </section>
+
         <div class="status" id="trade-progress" hidden role="status" aria-live="polite">
           <strong id="trade-progress-label"></strong><p class="hint" id="trade-progress-detail"></p>
           <a id="trade-tx-link" target="_blank" rel="noopener" hidden>View Ethereum transaction ↗</a>
@@ -225,18 +258,8 @@
           <button class="ghost" id="btn-trade-retry" type="button" hidden>Retry</button><button class="ghost" id="btn-trade-cancel" type="button" hidden>Cancel sale</button></div>
         </div>
         <div class="status" id="trade-message" role="status" aria-live="polite" hidden></div>
-
-        <div class="card">
-          <div class="step-head"><span class="step-n">2</span><span class="k">Convert</span></div>
-          <div id="fund-idle">
-            <div id="fund-assets"></div>
-            <p class="hint" id="fund-empty">Waiting for a deposit — balances appear here within a minute of confirming on Ethereum.</p>
-          </div>
-          <p class="hint" id="fund-convert-busy" hidden>A conversion is in progress — see step 3.</p>
-        </div>
-
-        <div class="card">
-          <div class="step-head"><span class="step-n">3</span><span class="k">Land</span></div>
+        <div class="card" id="fund-progress-card" hidden>
+          <div class="step-head"><span class="k">Buy progress</span></div>
           <p class="hint" id="fund-land-idle">Once a conversion starts, its progress and the landing button appear here.</p>
           <div class="status" id="fund-job" hidden>
             <span class="fund-spin" id="fund-spin" hidden></span>

@@ -99,7 +99,7 @@ function parked(extra = {}) {
 
   // Test the actual browser rendering helpers, without changing their public API.
   const src = fs.readFileSync(path.join(__dirname, "../public/js/fund.js"), "utf8")
-    .replace("return { mount, refresh, stop, forget };", "return { bridgeNotice, stepLabel };");
+    .replace("return { mount, refresh, stop, forget, selectAsset };", "return { bridgeNotice, stepLabel };");
   const ui = vm.runInNewContext(src + "\nFund;", {});
   const job = { route: "B", status: "awaiting_redeem", recordAmount: "1290000", estKoinOut: "210369830000" };
   assert.match(ui.bridgeNotice(job), /0.0129 vETH/);

@@ -486,7 +486,37 @@ body.sheet-open #tabbar { transform: translate(-50%, 120%); }
 #toast.in { transform: translate(-50%, 0); opacity: 1; }
 body.sheet-open #toast { bottom: calc(env(safe-area-inset-bottom) + 12px); }
 
-/* ───────────────────────── Buy tab ───────────────────────── */
+/* ───────────────────────── Trade ───────────────────────── */
+.trade-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; background: var(--inset); border: 1px solid var(--line); border-radius: var(--r-l); padding: 5px; margin-bottom: 20px; }
+.trade-tabs button { min-height: 46px; border: 0; border-radius: var(--r-m); background: transparent; font-weight: 650; color: var(--dim); cursor: pointer; }
+.trade-tabs button[aria-pressed="true"] { color: var(--bright); background: var(--grad); box-shadow: 0 2px 10px rgba(0, 0, 0, .18); }
+.trade-page-head h3 { margin: 0 0 5px; font-size: 20px; color: var(--bright); }
+.trade-page-head { margin-bottom: 16px; }
+.trade-balances-card .section-head { margin: 0 0 8px; gap: 12px; }
+.trade-balances-card h3 { margin: 0; font-size: 16px; color: var(--bright); }
+.trade-balance-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 13px 0; border-top: 1px solid var(--line); }
+.trade-balance-row:first-child { border-top: 0; }
+.trade-balance-info { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: baseline; min-width: 0; gap: 3px 7px; }
+.trade-balance-info strong { color: var(--bright); font-size: 15px; }
+.trade-balance-info .hint { margin: 0; font-size: 11px; }
+.trade-balance-value { grid-column: 1 / -1; color: var(--bright); font-size: 16px; overflow-wrap: anywhere; -webkit-user-select: text; user-select: text; }
+.trade-balance-row button { flex: none; min-height: 44px; min-width: 122px; padding: 0 12px; font-size: 12px; }
+.trade-balance-row button.is-selected { border-color: var(--accent); color: var(--accent-soft); background: var(--tint-accent); }
+.trade-balance-wallet { font-size: 11px; color: var(--dim); text-align: right; }
+#trade-balances-note { margin: 6px 0 0; }
+#trade-flow { scroll-margin-top: calc(var(--bar-h) + 16px); }
+.trade-flow-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 22px 0 6px; }
+.trade-flow-head h3 { margin: 0; color: var(--bright); font-size: 19px; }
+#trade-flow-note { margin: 0 0 14px; }
+.trade-deposit { border-bottom: 1px solid var(--line); padding-bottom: 10px; margin-bottom: 12px; }
+.trade-deposit summary { padding: 10px 0; min-height: 44px; cursor: pointer; color: var(--accent-soft); font-weight: 600; }
+.trade-deposit .fund-net { display: table; margin: 6px auto 12px; }
+.trade-deposit .fund-addr { display: block; width: 100%; overflow-wrap: anywhere; }
+.fund-asset [data-requote] { margin: 0 0 12px; }
+@media (max-width: 360px) {
+  .trade-balance-row { gap: 8px; }
+  .trade-balance-row button { min-width: 110px; padding: 0 8px; }
+}
 .step-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
 .step-n { width: 24px; height: 24px; border-radius: 50%; background: var(--tint-accent); color: var(--accent-soft); font: 800 12px/24px var(--font); text-align: center; flex: none; }
 .step-head .k { margin: 0; }
