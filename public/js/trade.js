@@ -3,6 +3,95 @@ const Trade = (() => {
   const $ = s => document.querySelector(s);
   const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   let ctx, state, review, working = false, generation = 0, quoteGeneration = 0;
+  let mode = 'buy', selected = null, refreshWorking = false;
+  const assets = [
+    { id: 'koin', symbol: 'KOIN', network: 'Koinos', dp: 8 },
+    { id: 'vkoin', symbol: 'vKOIN', network: 'Ethereum', dp: 8 },
+    { id: 'usdt', symbol: 'USDt', network: 'Ethereum', dp: 6 },
+    { id: 'eth', symbol: 'ETH', network: 'Ethereum', dp: 8 },
+    { id: 'sol', symbol: 'SOL', network: 'Solana', dp: 9 },
+    { id: 'usdc', symbol: 'USDC', network: 'Ethereum', dp: 6 },
+  ];
+  const symbol = asset => assets.find(a => a.id === asset)?.symbol || '';
+  function updateBalances() {
+    if (!ctx) return;
+    for (const asset of assets) {
+      const node = document.querySelector(`[data-trade-balance="${asset.id}"]`);
+      const sats = ctx.koinBalance?.();
+      const value = asset.id === 'koin'
+        ? /^\d+$/.test(sats || '') ? Portfolio.fromSats(sats, 8) : null
+        : state?.balances?.[asset.id];
+      node.textContent = value != null && /^\d+(\.\d+)?$/.test(String(value))
+        ? Portfolio.fmtAmount(String(value), asset.dp) : state ? 'Unavailable' : 'Loading…';
+    }
+    const note = $('#trade-balances-note');
+    note.textContent = state?.demo ? 'Sample balances · demo mode'
+      : state?.balancesError || state?.balances?.solError ? 'Some balances are unavailable. Refresh to try again.'
+      : !state?.balances ? 'Waiting for deposit balances. You can refresh to try again.'
+      : 'KOIN is in your wallet. Other balances are at your deposit addresses.';
+  }
+  function updatePage() {
+    const buying = mode === 'buy', ready = !!state?.enabled;
+    $('#btn-trade-buy').setAttribute('aria-pressed', String(buying));
+    $('#btn-trade-sell').setAttribute('aria-pressed', String(!buying));
+    $('#trade-page-title').textContent = buying ? 'Buy KOIN' : 'Sell KOIN';
+    $('#trade-page-description').textContent = buying
+      ? 'Choose a currency below to deposit funds and compare routes to KOIN.'
+      : 'Choose what to receive for your KOIN. ETH is currently supported; other sell destinations are not available yet.';
+    document.querySelectorAll('[data-trade-asset]').forEach(button => {
+      const asset = button.dataset.tradeAsset;
+      button.hidden = !buying && !['eth', 'vkoin'].includes(asset);
+      button.textContent = asset === 'vkoin' ? 'View vKOIN' : buying ? `Buy with ${symbol(asset)}` : 'Sell for ETH';
+      button.disabled = !ready;
+      button.setAttribute('aria-expanded', String(selected === asset));
+      button.classList.toggle('is-selected', selected === asset);
+    });
+    $('#trade-flow').hidden = !selected || !ready;
+    $('#trade-buy-card').hidden = !buying || !selected || selected === 'vkoin';
+    $('#sell-koin-card').hidden = buying || selected !== 'eth' || !!state?.demo;
+    $('#trade-deposit-card').hidden = selected === 'vkoin';
+    $('#trade-eth-actions').hidden = selected !== 'eth';
+    $('#fund-sol-block').hidden = selected !== 'sol' || !state?.solAddress;
+    $('#fund-eth-label').textContent = selected === 'sol' ? 'Add ETH for network gas' : `Deposit ${symbol(selected)}`;
+    $('#fund-eth-note').textContent = `Send only ${selected === 'sol' ? 'ETH' : symbol(selected)} on Ethereum mainnet. Tap the address to copy.`;
+    $('#trade-deposit-title').textContent = selected === 'eth' ? 'Deposit or withdraw ETH' : `Deposit ${symbol(selected)}`;
+    $('#trade-withdraw-note').hidden = !buying || !selected || ['eth', 'vkoin'].includes(selected);
+    $('#trade-withdraw-note').textContent = `${symbol(selected)} withdrawals are not supported yet.`;
+    $('#trade-flow-title').textContent = selected === 'vkoin' ? 'Your vKOIN balance' : buying ? `Buy with ${symbol(selected)}` : 'Sell KOIN for ETH';
+    $('#trade-flow-note').textContent = selected === 'vkoin'
+      ? 'vKOIN is wrapped KOIN on Ethereum. Existing conversions continue through the bridge; their progress and any required approval appear below. Starting a separate vKOIN conversion is not supported yet.'
+      : state?.demo && !buying ? 'Selling and withdrawals require a live account.'
+      : buying ? `Use your ${symbol(selected)} balance or deposit more, then choose an amount and review the available routes.`
+      : 'Compare routes, approve your sale, then withdraw the ETH when it arrives. You can add ETH below for network gas.';
+  }
+  function chooseMode(next) {
+    if (next === mode) return;
+    mode = next; selected = null; quoteGeneration++;
+    $('#sell-routes').innerHTML = '';
+    Fund.selectAsset(null);
+    updatePage();
+  }
+  function openAsset(asset) {
+    if (!state?.enabled || !assets.some(a => a.id === asset) || asset === 'koin') return;
+    if (mode === 'sell' && !['eth', 'vkoin'].includes(asset)) return;
+    selected = asset;
+    Fund.selectAsset(mode === 'buy' && asset !== 'vkoin' ? asset : null);
+    updatePage();
+    $('#fund-eth-block').open = asset !== 'sol' && !(Number(state?.balances?.[asset]) > 0);
+    $('#fund-sol-block').open = asset === 'sol' && !(Number(state?.balances?.sol) > 0);
+    $('#trade-flow-title').focus({ preventScroll: true });
+    $('#trade-flow').scrollIntoView({ block: 'start', behavior: 'auto' });
+  }
+  async function refreshBalances() {
+    if (refreshWorking) return;
+    refreshWorking = true; $('#btn-trade-refresh').disabled = true;
+    $('#btn-trade-refresh').textContent = 'Refreshing…';
+    try { await Promise.all([Fund.refresh(), ctx.refreshKoin?.()]); }
+    finally {
+      refreshWorking = false; $('#btn-trade-refresh').disabled = false;
+      $('#btn-trade-refresh').textContent = 'Refresh'; updateBalances();
+    }
+  }
   const labels = {
     sell_swap: 'Approve KOIN → vETH', sell_bridge: 'Approve bridge to Ethereum', sell_refresh: 'Refresh Vortex signatures',
     koin_pending: 'Confirming your Koinos transaction…', sell_signatures: 'Waiting for Vortex signatures…',
@@ -39,6 +128,30 @@ const Trade = (() => {
   }
   function mount(context) {
     ctx = context;
+    $('#trade-current-balances').innerHTML = assets.map(asset =>
+      `<div class="trade-balance-row"><div class="trade-balance-info"><strong>${asset.symbol}</strong><span class="hint">${asset.network}</span>`
+      + `<span class="trade-balance-value num" data-trade-balance="${asset.id}">Loading…</span></div>`
+      + (asset.id === 'koin' ? '<span class="trade-balance-wallet">Wallet balance</span>'
+        : `<button class="ghost small" type="button" data-trade-asset="${asset.id}" aria-controls="trade-flow" aria-expanded="false" disabled></button>`)
+      + '</div>').join('');
+    $('#btn-trade-buy').addEventListener('click', () => chooseMode('buy'));
+    $('#btn-trade-sell').addEventListener('click', () => chooseMode('sell'));
+    $('#btn-trade-refresh').addEventListener('click', refreshBalances);
+    $('#btn-trade-close-flow').addEventListener('click', () => {
+      const previous = selected; selected = null; Fund.selectAsset(null); updatePage();
+      document.querySelector(`[data-trade-asset="${previous}"]`)?.focus();
+    });
+    $('#trade-current-balances').addEventListener('click', e => {
+      const button = e.target.closest('[data-trade-asset]');
+      if (button && !button.disabled) openAsset(button.dataset.tradeAsset);
+    });
+    for (const [id, asset] of [['#stat-eth-row', 'eth'], ['#stat-sol-row', 'sol'], ['#stat-stable-row', 'stable']]) {
+      $(id)?.addEventListener('click', () => {
+        chooseMode('buy');
+        openAsset(asset === 'stable' ? Number(state?.spendable?.usdt) > 0 ? 'usdt' : 'usdc' : asset);
+      });
+    }
+    updatePage(); updateBalances();
     $('#btn-eth-withdraw').addEventListener('click', () => open('withdraw'));
     $('#btn-eth-close').addEventListener('click', () => $('#eth-withdraw-dialog').close());
     for (const id of ['#eth-withdraw-to', '#eth-withdraw-amount']) $(id).addEventListener('input', () => {
@@ -104,6 +217,7 @@ const Trade = (() => {
       document.querySelectorAll('#eth-withdraw-fields input, #eth-withdraw-fields button').forEach(n => { n.disabled = false; }); }
   }
   async function quote() {
+    if (!state?.enabled || !state.balances || state.demo || state.tradingUnavailable || state.accountActive === false || state.tradeBlocked || (state.job && state.job.status !== 'done')) return;
     const gen = generation, qgen = ++quoteGeneration, amount = $('#sell-koin-amount').value.trim();
     $('#sell-routes').textContent = 'Pricing both routes…';
     try {
@@ -149,12 +263,15 @@ const Trade = (() => {
   }
   function render(st) {
     state = st;
-    $('#trade-eth-balance').textContent = st.balances ? `${st.balances.eth} ETH` : 'Balance unavailable';
+    updateBalances(); updatePage();
+    $('#trade-eth-balance').textContent = st.balances?.eth != null ? `${st.balances.eth} ETH` : 'ETH balance unavailable';
     const blocked = st.tradeBlocked || !!(st.job && st.job.status !== 'done');
-    $('#btn-eth-withdraw').disabled = !!st.demo || blocked || st.accountActive === false;
-    $('#btn-sell-quote').disabled = !!st.demo || blocked || st.accountActive === false;
-    $('#sell-koin-card').hidden = !!st.demo;
-    if (blocked) $('#sell-routes').innerHTML = '';
+    const disabled = !st.enabled || !st.balances || !!st.demo || blocked || st.accountActive === false || !!st.tradingUnavailable;
+    $('#btn-eth-withdraw').disabled = disabled;
+    $('#btn-sell-quote').disabled = disabled;
+    $('#btn-sell-max').disabled = disabled;
+    $('#sell-koin-amount').disabled = disabled;
+    if (disabled) { quoteGeneration++; $('#sell-routes').innerHTML = ''; }
     const j = st.trade;
     $('#trade-progress').hidden = !j;
     if (!j) return;
@@ -172,9 +289,11 @@ const Trade = (() => {
   }
   function forget() {
     generation++; quoteGeneration++; state = null; review = null;
+    mode = 'buy'; selected = null;
     $('#eth-withdraw-dialog').close(); resetReview();
     $('#eth-withdraw-to').value = ''; $('#eth-withdraw-amount').value = ''; $('#sell-koin-amount').value = '';
     $('#sell-routes').innerHTML = ''; $('#trade-progress').hidden = true; message('');
+    updateBalances(); updatePage();
   }
-  return { mount, render, forget };
+  return { mount, render, forget, updateBalances };
 })();

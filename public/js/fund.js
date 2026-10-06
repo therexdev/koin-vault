@@ -16,6 +16,10 @@ const Fund = (() => {
   let QR_SHOWN = null;        // the deposit address the QR tile currently shows
   let QR_SHOWN_SOL = null;    // same, for the Solana tile
   let LAST_JOB_STATUS = null; // to notice a job finishing while another tab is up
+  let SELECTED = null;
+  let SESSION = 0;           // account changes invalidate quotes and approvals
+  const DRAFTS = {};
+  const QUOTE_REQUEST = {};
   const DEBOUNCE = {};
 
   const $ = (s) => document.querySelector(s);
@@ -90,7 +94,7 @@ const Fund = (() => {
       + ' — waiting to land on your account</span>';
   }
 
-  const SYM = { eth: 'ETH', usdc: 'USDC', usdt: 'USDT', sol: 'SOL' };
+  const SYM = { eth: 'ETH', usdc: 'USDC', usdt: 'USDt', sol: 'SOL' };
   const CHAIN = { eth: 'Ethereum', usdc: 'Ethereum', usdt: 'Ethereum', sol: 'Solana' };
   const DP = { eth: 5, usdc: 2, usdt: 2, sol: 4 };
 
@@ -107,6 +111,8 @@ const Fund = (() => {
     $('#btn-fund-reset').addEventListener('click', () => act('/api/fund/reset'));
     const assets = $('#fund-assets');
     assets.addEventListener('click', (e) => {
+      const recalculate = e.target.closest('button[data-requote]');
+      if (recalculate) { requote(recalculate.closest('.fund-asset').dataset.asset); return; }
       const max = e.target.closest('button[data-max]');
       if (max) {
         const panel = max.closest('.fund-asset');
@@ -134,6 +140,10 @@ const Fund = (() => {
   function forget() {
     if (typeof Trade !== 'undefined') Trade.forget();
     stop(); LAST = null; LAST_JOB_STATUS = null; QR_SHOWN = null; QR_SHOWN_SOL = null;
+    SESSION++; SELECTED = null;
+    for (const asset of Object.keys(DEBOUNCE)) { clearTimeout(DEBOUNCE[asset]); delete DEBOUNCE[asset]; }
+    for (const asset of Object.keys(DRAFTS)) delete DRAFTS[asset];
+    for (const asset of Object.keys(QUOTE_REQUEST)) delete QUOTE_REQUEST[asset];
     $('#fund-setup').hidden = false; $('#fund-body').hidden = true;
     $('#fund-eth-addr').textContent = ''; $('#fund-balances').innerHTML = ''; $('#fund-assets').innerHTML = '';
     $('#fund-job').hidden = true; $('#fund-job-label').textContent = ''; $('#fund-job-sub').textContent = '';
@@ -149,6 +159,7 @@ const Fund = (() => {
     opt('#tabdot-convert', (n) => { n.hidden = true; n.classList.remove('pulse'); });
     opt('#fund-land-idle', (n) => { n.hidden = false; });
     opt('#fund-convert-busy', (n) => { n.hidden = true; });
+    opt('#fund-progress-card', n => { n.hidden = true; });
   }
 
   async function refresh() {
@@ -165,6 +176,8 @@ const Fund = (() => {
       if (g !== GEN) return;
       /* Never fail silently — a dead-looking button is worse than a reason. */
       if (e.status !== 404) say(e.message || 'Funding is unavailable right now', 'err');
+      LAST = { ...LAST, balances: null, spendable: null, quotes: null, tradingUnavailable: true, balancesError: 'Could not refresh balances.' };
+      render(LAST);
     }
     const active = LAST && (LAST.tradeBlocked || (LAST.job && !['done', 'error'].includes(LAST.job.status)));
     TIMER = setTimeout(refresh, active ? 4000 : 15000);
@@ -209,10 +222,15 @@ const Fund = (() => {
   /* Re-price the routes for the amount in the box (debounced). */
   function requote(asset) {
     clearTimeout(DEBOUNCE[asset]);
+    const panel = document.querySelector(`.fund-asset[data-asset="${asset}"]`);
+    if (!panel || asset !== SELECTED) return;
+    const amount = panel.querySelector('input[data-amt]').value.trim();
+    DRAFTS[asset] = amount;
+    const request = QUOTE_REQUEST[asset] = (QUOTE_REQUEST[asset] || 0) + 1, session = SESSION;
+    // Invalidate the old route buttons as soon as the amount changes.
+    panel.querySelector('[data-routes]').innerHTML = '<div class="hint">Pricing routes…</div>';
     DEBOUNCE[asset] = setTimeout(async () => {
-      const panel = document.querySelector(`.fund-asset[data-asset="${asset}"]`);
-      if (!panel) return;
-      const amount = panel.querySelector('input[data-amt]').value.trim();
+      if (session !== SESSION || asset !== SELECTED || !panel.isConnected || request !== QUOTE_REQUEST[asset]) return;
       const box = panel.querySelector('[data-routes]');
       if (!amount || !/^\d*\.?\d*$/.test(amount) || !(Number(amount) > 0)) {
         box.innerHTML = '<div class="hint">Enter an amount to price the routes.</div>';
@@ -221,12 +239,23 @@ const Fund = (() => {
       box.innerHTML = '<div class="hint">Pricing routes…</div>';
       try {
         const r = await CTX.api('/api/fund/quote', { credentialId: CTX.credentialId(), asset, amount });
-        if (panel.querySelector('input[data-amt]').value.trim() !== amount) return;
+        if (session !== SESSION || asset !== SELECTED || !panel.isConnected || request !== QUOTE_REQUEST[asset]) return;
         box.innerHTML = routesHtml(asset, r.quote);
       } catch (e) {
+        if (session !== SESSION || asset !== SELECTED || !panel.isConnected || request !== QUOTE_REQUEST[asset]) return;
         box.innerHTML = '<div class="fund-unavail">' + esc(e.message || 'Quote failed') + '</div>';
       }
     }, 450);
+  }
+
+  function selectAsset(asset) {
+    if (asset != null && !Object.hasOwn(SYM, asset)) return;
+    if (SELECTED !== asset) {
+      for (const key of Object.keys(DEBOUNCE)) clearTimeout(DEBOUNCE[key]);
+      $('#fund-assets').innerHTML = '';
+    }
+    SELECTED = asset;
+    if (LAST) render(LAST);
   }
 
   function routesHtml(asset, q) {
@@ -285,15 +314,19 @@ const Fund = (() => {
   }
 
   async function startSwap(asset, amount, route, btn, quoteId) {
-    if (BUSY) return;
+    if (BUSY || asset !== SELECTED || !LAST?.balances || LAST.tradingUnavailable || LAST.accountActive === false
+      || LAST.tradeBlocked || (LAST.job && LAST.job.status !== 'done')) return;
+    const session = SESSION;
     BUSY = true; if (btn) btn.disabled = true;
     try {
       say(asset === 'sol' ? 'Starting the swap — the server drives the Solana and Ethereum legs from here…'
         : 'Starting the swap — the server drives the Ethereum side from here…');
       await CTX.api('/api/fund/start', { credentialId: CTX.credentialId(), asset, amount, route, quoteId });
+      if (session !== SESSION) return;
       say('');
       await refresh();
     } catch (e) {
+      if (session !== SESSION) return;
       say(e.message || 'Could not start the swap', 'err');
       if (/quote.*expir|refresh.*quote/i.test(e.message || '')) requote(asset);
     }
@@ -327,6 +360,14 @@ const Fund = (() => {
      already sitting there and something else is blocking it, and a person
      staring at their own balance with no button is owed the reason. */
   function whyNothing(st, b, solConvert) {
+    if (SELECTED) {
+      if (!b || b[SELECTED] == null) return `Your ${SYM[SELECTED]} balance is unavailable. Refresh to try again.`;
+      if (SELECTED === 'sol' && !solConvert) return 'SOL conversion is unavailable right now. Your SOL stays at your Solana address.';
+      if (!(Number(b[SELECTED]) > 0)) return `Deposit ${SYM[SELECTED]} using the address or QR code above. Routes appear once your deposit confirms.`;
+      if (SELECTED === 'eth') return 'Your ETH balance is reserved for network gas. Deposit more ETH to buy KOIN.';
+      if (SELECTED === 'sol') return `Converting needs at least ${esc(st.solFloor || '0.06')} SOL, including the network fee reserve.`;
+      return `${SYM[SELECTED]} cannot be converted right now. Refresh to check available routes.`;
+    }
     const sp = st.spendable || {};
     const has = (v) => Number(v) > 0;
     const rows = [];
@@ -356,11 +397,10 @@ const Fund = (() => {
   const opt = (sel, fn) => { const n = $(sel); if (n) fn(n); };
 
   function render(st) {
-    if (typeof Trade !== 'undefined') Trade.render(st);
     $('#fund-setup').hidden = !!st.enabled;
     $('#fund-body').hidden = !st.enabled;
     opt('#buy-sim-chip', (n) => { n.hidden = !st.demo; });
-    if (!st.enabled) return;
+    if (!st.enabled) { if (typeof Trade !== 'undefined') Trade.render(st); return; }
 
     $('#fund-eth-addr').textContent = st.ethAddress;
     /* Receive and UI are top-level consts of later scripts: lexical globals,
@@ -438,21 +478,12 @@ const Fund = (() => {
       tiles.hidden = !(showEth || showStable || showSol || !!held);
     }
 
-    /* the in-card strip mirrors the same numbers */
+    /* The balance list lives in Trade; keep only in-flight balances here. */
     const strip = [];
     if (st.demo) strip.push('<span class="fund-sample">SAMPLE — demo mode</span>');
     if (b) {
       const f = (v, dp) => Number(v || 0).toLocaleString('en-US', { maximumFractionDigits: dp });
-      strip.push(`<span>ETH <strong>${f(b.eth, 5)}</strong></span>`);
-      strip.push(`<span>USDC <strong>${f(b.usdc, 2)}</strong></span>`);
-      strip.push(`<span>USDT <strong>${f(b.usdt, 2)}</strong></span>`);
-      /* Always shown, zero included. Hiding it when it hits 0 is how a
-         correct bridging step reads as "my money disappeared". */
-      strip.push(`<span>vKOIN <strong>${f(b.vkoin, 2)}</strong></span>`);
       if (b.sol != null) {
-        const sp = st.spendable || {};
-        const stuck = solConvert && Number(b.sol) > 0 && !(Number(sp.sol) > 0) && st.solFloor;
-        strip.push(`<span>SOL <strong>${f(b.sol, 4)}</strong>${stuck ? ` · needs ${esc(st.solFloor)} to convert` : ''}</span>`);
         /* vKOIN and wETH on Solana exist only mid-route; shown while they do. */
         if (Number(b.solVkoin) > 0) strip.push(`<span>vKOIN·Solana <strong>${f(b.solVkoin, 2)}</strong></span>`);
         if (Number(b.solWeth) > 0) strip.push(`<span>ETH·Solana <strong>${f(b.solWeth, 5)}</strong></span>`);
@@ -487,11 +518,13 @@ const Fund = (() => {
     const jobActive = st.tradeBlocked || (j && !['done', 'error'].includes(j.status));
     $('#fund-idle').hidden = !!jobActive || (j && j.status === 'error');
     $('#fund-job').hidden = !j || !!st.tradeBlocked;
-    opt('#fund-convert-busy', (n) => { n.hidden = !$('#fund-idle').hidden; n.textContent = st.tradeBlocked ? 'A sale or withdrawal is in progress above.' : 'A conversion is in progress — see step 3.'; });
+    opt('#fund-convert-busy', (n) => { n.hidden = !$('#fund-idle').hidden; n.textContent = st.tradeBlocked ? 'A sale or withdrawal is in progress. Follow its progress below.' : 'A conversion is in progress. Follow its progress below.'; });
+    opt('#fund-progress-card', n => { n.hidden = !j || !!st.tradeBlocked; });
     opt('#fund-land-idle', (n) => { n.hidden = !!j; });
     opt('#tabdot-convert', (n) => { n.hidden = !j; n.classList.toggle('pulse', !!(j && needsTap(j))); });
     /* KOIN landing while the person is on another tab deserves a word. */
     if (j && j.status === 'done' && LAST_JOB_STATUS && LAST_JOB_STATUS !== 'done') {
+      CTX.onKoinMoved?.();
       const tab = $('#tab-convert');
       if (tab && tab.hidden && typeof UI !== 'undefined') UI.toast('KOIN landed — see Home');
     }
@@ -500,26 +533,27 @@ const Fund = (() => {
     /* per-asset amount + route panels (only rebuilt when idle, so typing
        is never clobbered by the poll) */
     const assets = $('#fund-assets');
-    if (!jobActive && b && st.spendable && st.accountActive !== false) {
+    if (!jobActive && b && st.spendable && st.accountActive !== false && SELECTED) {
       /* With a sponsor the platform covers the one step the deposit cannot,
          so a SOL-only deposit needs nothing from the user. */
       const lowGas = !st.gasFronting && Number(b.eth) < Number(st.gasMinEth || 0.0012);
       const panels = [];
-      for (const asset of ['eth', 'usdc', 'usdt', 'sol']) {
+      for (const asset of [SELECTED]) {
         const spend = st.spendable[asset];
         if (!(Number(spend) > 0)) continue;
         if (asset === 'sol' && (!solConvert || b.sol == null)) continue;
-        const open = document.querySelector(`.fund-asset[data-asset="${asset}"] input[data-amt]`);
-        const value = open && document.activeElement === open ? open.value : spend;
+        const value = DRAFTS[asset] ?? spend;
         const cap = !st.caps ? '' : asset === 'eth' ? st.caps.eth : asset === 'sol' ? (st.caps.sol || '') : st.caps.stable;
         const min = asset === 'sol' && st.solMin ? ' · min ' + esc(st.solMin) : '';
-        const q = st.quotes && st.quotes[asset];
+        // Status quotes cover the spendable maximum, never a custom draft.
+        const q = value === spend && st.quotes && st.quotes[asset];
         panels.push(
           `<div class="fund-asset" data-asset="${asset}" data-spendable="${esc(spend)}">` +
           `<div class="fund-asset-head">${esc(Number(b[asset]).toLocaleString('en-US', { maximumFractionDigits: DP[asset] }))} ${SYM[asset]} at your ${CHAIN[asset]} deposit address</div>` +
-          `<label class="fund-amt-label">Amount (${SYM[asset]} · max ${esc(spend)}${cap ? ' · cap ' + esc(cap) : ''}${min})</label>` +
-          `<div class="fund-amount-row"><input data-amt inputmode="decimal" autocomplete="off" spellcheck="false" value="${esc(value)}">` +
-          `<button class="ghost" data-max>Max</button></div>` +
+          `<label class="fund-amt-label" for="fund-amount-${asset}">Amount (${SYM[asset]} · max ${esc(spend)}${cap ? ' · cap ' + esc(cap) : ''}${min})</label>` +
+          `<div class="fund-amount-row"><input id="fund-amount-${asset}" data-amt inputmode="decimal" autocomplete="off" spellcheck="false" value="${esc(value)}">` +
+          `<button class="ghost" type="button" data-max>Max</button></div>` +
+          '<button class="ghost wide" type="button" data-requote>Compare buy routes</button>' +
           `<div data-routes>${q ? routesHtml(asset, q) : '<div class="hint">Pricing routes…</div>'}</div>` +
           (asset === 'sol' && lowGas
             ? `<div class="fund-gaswarn">⚠ This route finishes on Ethereum, and the first step there has to be paid for before your deposit has any ETH of its own. Send about ${esc(st.gasMinEth)} ETH to your Ethereum deposit address first.</div>`
@@ -530,13 +564,20 @@ const Fund = (() => {
       }
       /* Rebuild only when the set of panels changes or none exist, or when
          no input is focused — otherwise leave the DOM alone. */
+      const current = assets.querySelector('.fund-asset');
+      const spendable = st.spendable[SELECTED];
       const focused = document.activeElement && assets.contains(document.activeElement);
-      if (!focused) assets.innerHTML = panels.join('');
+      const preserve = focused && current && current.dataset.asset === SELECTED && current.dataset.spendable === spendable && panels.length;
+      if (!preserve) {
+        assets.innerHTML = panels.join('');
+        if (panels.length && (DRAFTS[SELECTED] != null || !st.quotes?.[SELECTED])) requote(SELECTED);
+      }
       $('#fund-empty').hidden = !!panels.length;
       if (!panels.length) $('#fund-empty').innerHTML = whyNothing(st, b, solConvert);
-    } else if (jobActive) {
+    } else {
       assets.innerHTML = '';
-      $('#fund-empty').hidden = true;
+      $('#fund-empty').hidden = !!jobActive || !SELECTED;
+      $('#fund-empty').textContent = st.accountActive === false ? 'Trading unlocks when your account is active.' : 'Balances or routes are unavailable. Refresh to try again.';
     }
 
     /* the job */
@@ -579,7 +620,8 @@ const Fund = (() => {
         : null);
       opt('#fund-job-why', (n) => { n.hidden = !why; n.textContent = why || ''; });
     }
+    if (typeof Trade !== 'undefined') Trade.render(st);
   }
 
-  return { mount, refresh, stop, forget };
+  return { mount, refresh, stop, forget, selectAsset };
 })();

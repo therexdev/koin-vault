@@ -589,6 +589,7 @@
     } finally {
       if (gen === PAINT_GEN) {
         PAINTING = false;
+        if (WalletClient.canBuy) Trade.updateBalances();
         if (PAINT_AGAIN) { PAINT_AGAIN = false; paint(); }
       }
     }
@@ -928,6 +929,7 @@
     api,
     signPrepared,
     koinBalance: () => BALANCE_SATS,
+    refreshKoin: () => paint(),
     credentialId: () => (RECOVERY ? RECOVERY.credentialId : Passkey.storedId()),
     onKoinMoved: () => { void transactionFeed?.refresh(); paint(); },
   });
