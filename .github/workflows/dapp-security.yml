@@ -19,3 +19,16 @@ jobs:
           cache: npm
       - run: npm ci --omit=dev --ignore-scripts
       - run: npm test
+
+  reference-sdks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --include=dev --ignore-scripts
+      - run: node tests/dependency-compat.test.js
+      - run: node tests/solana-lite.test.js && node tests/wormhole-lite.test.js && node tests/sol-rail.test.js
+      - run: npm audit --omit=dev --audit-level=moderate
