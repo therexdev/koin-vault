@@ -13,6 +13,13 @@ const done = j => !j || ['done', 'cancelled', 'failed'].includes(j.status);
 const tapStates = new Set(['sell_swap', 'sell_bridge', 'sell_refresh']);
 const fmt = ethers.formatEther;
 const clone = value => JSON.parse(JSON.stringify(value));
+// Temporary per-sale ceiling for the owner-authorized live testing rollout.
+const MAX_SELL_KOIN_SATS = 10000n * 100000000n;
+function assertSellLimit(amount) {
+  if (BigInt(amount) <= 0n || BigInt(amount) > MAX_SELL_KOIN_SATS) {
+    throw new Error('Live testing is limited to 10,000 KOIN per sale');
+  }
+}
 
 function create({ settings, store, persist, provider, transit, buyBusy, invalidate }) {
   const intents = new Map(), quotes = new Map(), busy = new Set();
@@ -56,7 +63,7 @@ function create({ settings, store, persist, provider, transit, buyBusy, invalida
     const text = String(amount || '').trim();
     if (!/^(?:0|[1-9]\d*)(?:\.\d{1,8})?$/.test(text)) throw new Error('Enter a KOIN amount with at most 8 decimal places');
     const sats = ethers.parseUnits(text, 8);
-    if (sats <= 0n || sats > 18446744073709551615n) throw new Error('Invalid KOIN amount');
+    assertSellLimit(sats);
     const p = await provider(), from = transit(account).ethAddress;
     const [balance, ethBalance, fee, network] = await Promise.all([
       chain.koinBalanceSats(account), p.getBalance(from), p.getFeeData(), p.getNetwork(),
@@ -102,6 +109,7 @@ function create({ settings, store, persist, provider, transit, buyBusy, invalida
       idle(account);
       const q = quotes.get(String(body.quoteId));
       if (!q || q.account !== account || q.expires <= Date.now()) throw new Error('Sell quote expired; refresh the routes');
+      assertSellLimit(q.amount);
       if (await (await provider()).getBalance(q.from) < BigInt(q.gasBudget)) throw new Error(`Keep at least ${q.gasBudgetEth} ETH at this address for the sale's Ethereum gas`);
       payload = { kind: 'sell', ...clone(q) };
     } else if (['retry', 'cancel'].includes(body.kind)) {
@@ -150,6 +158,7 @@ function create({ settings, store, persist, provider, transit, buyBusy, invalida
         save(account, { ...v, request: undefined, id: ref, account, status: 'withdraw_pending', txHash: hash,
           pendingEth: { raw, hash, step: 'withdraw', sentAt: 0 } });
       } else {
+        assertSellLimit(v.amount);
         if (await p.getBalance(v.from) < BigInt(v.gasBudget)) throw new Error('ETH gas balance changed; refresh the quote');
         if (BigInt(await chain.koinBalanceSats(account)) < BigInt(v.amount)) throw new Error('KOIN balance changed');
         save(account, { ...v, id: ref, account, status: v.route === 'B' ? 'sell_swap' : 'sell_bridge',

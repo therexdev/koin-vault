@@ -17,8 +17,8 @@ Only ETH is a sell destination. Quotes compare the same two markets used
 for buying, including the on-chain bridge fee. Each quote expires after two
 minutes. It fixes swap minimums, the platform fee, fee recipient and a gas
 budget. The existing FUND_FEE_PCT configuration sets the quoted platform
-fee, which is paid once in ETH. The existing FUND_MAX_ETH limits the ETH
-value of a sale. These withdrawals have no platform withdrawal fee.
+fee, which is paid once in ETH. The server caps each sale at **10,000 KOIN** during live testing.
+The existing FUND_MAX_ETH also limits the ETH value of a sale. These withdrawals have no platform withdrawal fee.
 
 Sales require enough native ETH at the existing Ethereum address upfront
 for the complete Ethereum gas budget. They do not borrow from the gas
@@ -81,7 +81,8 @@ the quote cards, withdrawal Max/review/confirmation, changed recipients,
 pending-state controls and sign-out cleanup. Mobile and desktop layouts were
 inspected. No funded sell or withdrawal has been broadcast during development.
 
-Before public rollout, perform a small funded sale through each route and a
+The owner authorized deploying to main for live testing on 2026-10-06 with
+the 10,000 KOIN per-sale cap. The owner will perform a funded sale through each route and a
 small withdrawal followed by Max from a dedicated test account. Confirm
 receipts, balances, the fee payment and resume after a worker restart. This
 requires an account owner's explicit signing approval; the development
@@ -98,19 +99,15 @@ Bridge ABI/semantics were checked against the official repositories:
 [Ethereum bridge](https://github.com/VortexBridge/koinos-bridge-ethereum), and
 [Vortex UI](https://github.com/VortexBridge/interface-bridge).
 
-### Rehearsal branch, updated 2026-10-03
+### Live testing rollout, 2026-10-06
 
-`feat/koin-to-eth-withdrawal` includes the deployed worker recovery, Permit2
-renewal and explicit buy requoting fixes through main commit `2c0b46843efb`.
-Hostinger production is now on Node 22 with a ready Unix worker. Keep Node 22,
-`npm start`, the existing environment variables and DATA_DIR for the rehearsal.
-The complete main test script and all trade simulations pass on this combined
-branch. No real sale or withdrawal has been signed by development tooling.
+The owner authorized deployment to `main` for funded testing, with a hard
+10,000 KOIN per-sale limit. Quote creation, approval preparation and submission
+each enforce the cap. Max chooses the smaller of the available KOIN balance
+and 10,000 KOIN. The existing ETH-value ceiling may impose a lower limit.
+Withdrawals retain their existing balance and network-gas checks.
 
-For the first funded rehearsal, deploy this branch in Hostinger, open Trade,
-enter a modest KOIN amount, compare the two routes and review the fee/gas
-budget. Approve the sale and each requested Koinos step with your passkey.
-After ETH arrives, test Withdraw Ethereum to an address you control. Check
-the receiving balance and transaction receipt before testing Max. Repeat for
-the other route before public rollout. Keep the deployment on this branch
-until any pending sale or withdrawal is completed and reconciled.
+This includes the deployed worker recovery, Permit2 renewal and explicit buy
+requote fixes. Hostinger uses Node 22, `npm start`, existing environment settings
+and DATA_DIR. No real sale or withdrawal is broadcast by development tooling.
+The owner performs funded tests after deployment, as described above.

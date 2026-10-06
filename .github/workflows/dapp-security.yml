@@ -18,4 +18,4 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --omit=dev --ignore-scripts
-      - run: npm run pretest
+      - run: npm test

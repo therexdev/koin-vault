@@ -67,6 +67,24 @@ function transfer(token, value) { return { address: token, topics: [ethers.id('T
   const quoteReal = routes.quote;
   routes.quote = async route => ({ route, grossWei: eth('0.05').toString(), minWei: eth('0.04').toString(),
     gasUnits: '1200000', bridgeFee: '0', swapMin: '4000000', usdtMin: '1000000', bridgeAmount: '100000000', label: route, via: 'test' });
+  // The live test cap is checked before requesting either route or moving funds.
+  {
+    const h = harness();
+    chain.koinBalanceSats = async () => '2000000000000';
+    for (const amount of ['9999.99999999', '10000']) {
+      const q = await h.trade.sellQuote(account, amount);
+      assert.equal(q.routes.filter(r => !r.error).length, 2);
+      const prep = await h.trade.prepare(account, { kind: 'sell', quoteId: q.routes[0].quoteId }, identity);
+      assert.equal(prep.review.amountKoin, amount);
+    }
+    for (const amount of ['10000.00000001', '10001', '20000']) {
+      await assert.rejects(h.trade.sellQuote(account, amount), /10,000 KOIN per sale/);
+    }
+    assert.equal(h.current(), undefined);
+    assert.equal(h.broadcasts.length, 0);
+    chain.koinBalanceSats = async () => '100000000000';
+    console.log('Live sell limit: exact 10,000 KOIN boundary accepted, one satoshi over rejected before trading');
+  }
   // Authentication binds account, origin, recipient, amount, chain and nonce.
   let h = harness();
   let prepared = await h.trade.prepare(account, { kind: 'withdraw', to: recipient, max: true }, identity);
