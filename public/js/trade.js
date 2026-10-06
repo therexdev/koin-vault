@@ -4,6 +4,27 @@ const Trade = (() => {
   const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   let ctx, state, review, working = false, generation = 0, quoteGeneration = 0;
   let mode = 'buy', selected = null, refreshWorking = false;
+  const dismissedNotices = new Map();
+  // Only acknowledge finished notices. This never resets or cancels a job.
+  function noticeIdentity(kind, job, account = state?.ethAddress || ctx?.credentialId?.()) {
+    const finished = kind === 'buy' ? job?.status === 'done' : ['done', 'cancelled', 'failed'].includes(job?.status);
+    const id = job?.id || job?.txHash || job?.swapId || job?.redeemId || job?.ethTxHash || job?.startedAt || job?.updatedAt;
+    if (!finished || !id || !account) return null;
+    return { key: `kv_trade_notice_v1:${account}:${kind}`, value: JSON.stringify([id, job.status]) };
+  }
+  function isNoticeDismissed(kind, job, account) {
+    const notice = noticeIdentity(kind, job, account);
+    if (!notice) return false;
+    if (dismissedNotices.get(notice.key) === notice.value) return true;
+    try { return localStorage.getItem(notice.key) === notice.value; } catch (_) { return false; }
+  }
+  function dismissNotice(kind, job) {
+    const notice = noticeIdentity(kind, job);
+    if (!notice) return false;
+    dismissedNotices.set(notice.key, notice.value);
+    try { localStorage.setItem(notice.key, notice.value); } catch (_) { /* Still dismissed for this session. */ }
+    return true;
+  }
   const assets = [
     { id: 'koin', symbol: 'KOIN', network: 'Koinos', dp: 8 },
     { id: 'vkoin', symbol: 'vKOIN', network: 'Ethereum', dp: 8 },
@@ -34,10 +55,6 @@ const Trade = (() => {
     const buying = mode === 'buy', ready = !!state?.enabled;
     $('#btn-trade-buy').setAttribute('aria-pressed', String(buying));
     $('#btn-trade-sell').setAttribute('aria-pressed', String(!buying));
-    $('#trade-page-title').textContent = buying ? 'Buy KOIN' : 'Sell KOIN';
-    $('#trade-page-description').textContent = buying
-      ? 'Choose a currency below to deposit funds and compare routes to KOIN.'
-      : 'Choose what to receive for your KOIN. ETH is currently supported; other sell destinations are not available yet.';
     document.querySelectorAll('[data-trade-asset]').forEach(button => {
       const asset = button.dataset.tradeAsset;
       button.hidden = !buying && !['eth', 'vkoin'].includes(asset);
@@ -137,6 +154,11 @@ const Trade = (() => {
     $('#btn-trade-buy').addEventListener('click', () => chooseMode('buy'));
     $('#btn-trade-sell').addEventListener('click', () => chooseMode('sell'));
     $('#btn-trade-refresh').addEventListener('click', refreshBalances);
+    $('#btn-trade-dismiss').addEventListener('click', () => {
+      if (!dismissNotice('trade', state?.trade)) return;
+      render(state);
+      $('#btn-trade-refresh').focus();
+    });
     $('#btn-trade-close-flow').addEventListener('click', () => {
       const previous = selected; selected = null; Fund.selectAsset(null); updatePage();
       document.querySelector(`[data-trade-asset="${previous}"]`)?.focus();
@@ -273,7 +295,8 @@ const Trade = (() => {
     $('#sell-koin-amount').disabled = disabled;
     if (disabled) { quoteGeneration++; $('#sell-routes').innerHTML = ''; }
     const j = st.trade;
-    $('#trade-progress').hidden = !j;
+    $('#trade-progress').hidden = !j || isNoticeDismissed('trade', j);
+    $('#btn-trade-dismiss').hidden = !noticeIdentity('trade', j);
     if (!j) return;
     $('#trade-progress-label').textContent = j.status === 'done'
       ? j.kind === 'withdraw' ? `Sent ${j.amountEth} ETH to ${j.to}` : `${j.receivedEth} ETH received at your Ethereum address`
@@ -295,5 +318,5 @@ const Trade = (() => {
     $('#sell-routes').innerHTML = ''; $('#trade-progress').hidden = true; message('');
     updateBalances(); updatePage();
   }
-  return { mount, render, forget, updateBalances };
+  return { mount, render, forget, updateBalances, isNoticeDismissed, dismissNotice };
 })();

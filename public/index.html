@@ -185,10 +185,6 @@
         <button id="btn-trade-buy" type="button" aria-pressed="true">Buy KOIN</button>
         <button id="btn-trade-sell" type="button" aria-pressed="false">Sell KOIN</button>
       </nav>
-      <div class="trade-page-head">
-        <h3 id="trade-page-title">Buy KOIN</h3>
-        <p class="hint" id="trade-page-description">Choose a currency below to deposit funds and compare routes to KOIN.</p>
-      </div>
       <section class="card trade-balances-card" aria-labelledby="trade-balances-heading">
         <div class="section-head"><h3 id="trade-balances-heading">Current Balances</h3><button class="linkish accent" id="btn-trade-refresh" type="button">Refresh</button></div>
         <div id="trade-current-balances" class="trade-balances"></div>
@@ -252,14 +248,15 @@
         </section>
 
         <div class="status" id="trade-progress" hidden role="status" aria-live="polite">
-          <strong id="trade-progress-label"></strong><p class="hint" id="trade-progress-detail"></p>
+          <div class="trade-notice-head"><strong id="trade-progress-label"></strong><button class="ghost small" id="btn-trade-dismiss" type="button" aria-label="Dismiss completed trade notification" hidden>Dismiss</button></div>
+          <p class="hint" id="trade-progress-detail"></p>
           <a id="trade-tx-link" target="_blank" rel="noopener" hidden>View Ethereum transaction ↗</a>
           <div class="btn-row"><button class="cta small lock" id="btn-trade-tap" type="button" hidden>Confirm with passkey</button>
           <button class="ghost" id="btn-trade-retry" type="button" hidden>Retry</button><button class="ghost" id="btn-trade-cancel" type="button" hidden>Cancel sale</button></div>
         </div>
         <div class="status" id="trade-message" role="status" aria-live="polite" hidden></div>
         <div class="card" id="fund-progress-card" hidden>
-          <div class="step-head"><span class="k">Buy progress</span></div>
+          <div class="step-head trade-notice-head"><span class="k">Buy progress</span><button class="ghost small" id="btn-fund-dismiss" type="button" aria-label="Dismiss completed buy notification" hidden>Dismiss</button></div>
           <p class="hint" id="fund-land-idle">Once a conversion starts, its progress and the landing button appear here.</p>
           <div class="status" id="fund-job" hidden>
             <span class="fund-spin" id="fund-spin" hidden></span>
