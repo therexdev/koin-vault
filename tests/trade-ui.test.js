@@ -25,8 +25,10 @@ function node(selector) {
 }
 const click = (id, target) => node('#' + id).handlers.click({ target: { closest: () => target } });
 let selected, koinSats = '9007199254740993', requests = [];
+const storage = new Map();
 const context = vm.createContext({ document: { querySelector: node, querySelectorAll: s => s === '[data-trade-asset]' ? Object.values(buttons) : [] }, Portfolio,
   Fund: { selectAsset: a => { selected = a; }, refresh: async () => {} },
+  localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
 });
 vm.runInContext(read('public/js/trade.js') + '\nthis.trade = Trade;', context);
 const trade = context.trade;
@@ -77,6 +79,52 @@ assert.equal(node('#trade-buy-card').hidden, true);
   assert.equal(node('#btn-sell-quote').disabled, true);
   await click('btn-trade-refresh');
   assert.equal(balances.koin.textContent, '125');
+
+  const done = { id: 'sale-one', kind: 'sell', status: 'done', receivedEth: '0.0063428706' };
+  const receipt = { ...status, trade: done };
+  trade.render(receipt);
+  assert.equal(node('#btn-trade-dismiss').hidden, false);
+  const callsBeforeDismiss = requests.length;
+  click('btn-trade-dismiss');
+  assert.equal(node('#trade-progress').hidden, true);
+  trade.render(receipt);
+  assert.equal(node('#trade-progress').hidden, true, 'polling does not restore a cleared notice');
+  click('btn-trade-sell');
+  assert.equal(node('#trade-progress').hidden, true, 'changing tabs keeps the notice cleared');
+  assert.equal(requests.length, callsBeforeDismiss, 'dismissal makes no transaction/reset request');
+  assert.equal(done.status, 'done', 'the receipt is preserved');
+  trade.render({ ...receipt, trade: { ...done, id: 'sale-two' } });
+  assert.equal(node('#trade-progress').hidden, false, 'a new completed trade still appears');
+  trade.render({ ...receipt, ethAddress: '0x' + '2'.repeat(40) });
+  assert.equal(node('#trade-progress').hidden, false, 'another wallet has its own dismissals');
+  trade.render({ ...receipt, trade: { ...done, status: 'sell_bridge', needsTap: true } });
+  assert.equal(node('#btn-trade-dismiss').hidden, true);
+  click('btn-trade-dismiss');
+  assert.equal(node('#trade-progress').hidden, false, 'active steps cannot be dismissed');
+  trade.render({ ...receipt, trade: { ...done, status: 'error' } });
+  assert.equal(node('#btn-trade-dismiss').hidden, true, 'resumable errors remain visible');
+  for (const [kind, state] of [['withdraw', 'done'], ['withdraw', 'failed'], ['sell', 'cancelled']]) {
+    trade.render({ ...status, trade: { ...done, id: kind + state, kind, status: state } });
+    assert.equal(node('#btn-trade-dismiss').hidden, false);
+    click('btn-trade-dismiss');
+    assert.equal(node('#trade-progress').hidden, true);
+  }
+  trade.render(receipt); click('btn-trade-dismiss');
+  const buy = { id: 'buy-one', status: 'done' };
+  assert.equal(trade.dismissNotice('buy', buy), true);
+  assert.equal(trade.isNoticeDismissed('buy', buy, status.ethAddress), true);
+  assert.equal(trade.isNoticeDismissed('buy', { ...buy, id: 'buy-two' }, status.ethAddress), false);
+  assert.equal(trade.dismissNotice('buy', { ...buy, status: 'awaiting_swap' }), false);
+  const reloadedContext = vm.createContext({ document: context.document, Portfolio, Fund: context.Fund, localStorage: context.localStorage });
+  const reloaded = vm.runInContext(read('public/js/trade.js') + '\nTrade;', reloadedContext);
+  reloaded.mount({ credentialId: () => 'account', koinBalance: () => koinSats });
+  reloaded.render(receipt);
+  assert.equal(node('#trade-progress').hidden, true, 'reload restores the stored dismissal');
+  assert.equal(reloaded.isNoticeDismissed('buy', buy, status.ethAddress), true);
+  assert.equal(reloaded.isNoticeDismissed('buy', buy, 'another-wallet'), false);
+  reloaded.forget(); reloaded.render(receipt);
+  assert.equal(node('#trade-progress').hidden, true, 'signing back in preserves the acknowledgement');
+
   koinSats = ''; trade.forget();
   assert.equal(node('#trade-flow').hidden, true);
   assert.equal(balances.eth.textContent, 'Loading…');
@@ -107,5 +155,5 @@ assert.equal(node('#trade-buy-card').hidden, true);
   qctx.SESSION++; routes.innerHTML = 'signed out';
   pending[2].resolve({ quote: { id: 'old account quote' } }); await oldSession;
   assert.equal(routes.innerHTML, 'signed out');
-  console.log('Trade UI: exact balances, Buy/Sell navigation, supported actions, deposit visibility, pending jobs, cap, refresh, sign-out and stale quote isolation passed');
+  console.log('Trade UI: balances, navigation, quotes, transaction guards and wallet-scoped notification dismissal across polling, reloads and sign-in passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

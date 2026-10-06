@@ -490,8 +490,9 @@ body.sheet-open #toast { bottom: calc(env(safe-area-inset-bottom) + 12px); }
 .trade-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; background: var(--inset); border: 1px solid var(--line); border-radius: var(--r-l); padding: 5px; margin-bottom: 20px; }
 .trade-tabs button { min-height: 46px; border: 0; border-radius: var(--r-m); background: transparent; font-weight: 650; color: var(--dim); cursor: pointer; }
 .trade-tabs button[aria-pressed="true"] { color: var(--bright); background: var(--grad); box-shadow: 0 2px 10px rgba(0, 0, 0, .18); }
-.trade-page-head h3 { margin: 0 0 5px; font-size: 20px; color: var(--bright); }
-.trade-page-head { margin-bottom: 16px; }
+.trade-notice-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.trade-notice-head > strong { min-width: 0; overflow-wrap: anywhere; }
+.trade-notice-head > button.ghost { flex: none; min-height: 44px; margin-left: auto; }
 .trade-balances-card .section-head { margin: 0 0 8px; gap: 12px; }
 .trade-balances-card h3 { margin: 0; font-size: 16px; color: var(--bright); }
 .trade-balance-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 13px 0; border-top: 1px solid var(--line); }

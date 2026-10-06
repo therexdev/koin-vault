@@ -109,6 +109,11 @@ const Fund = (() => {
     $('#btn-fund-retry').addEventListener('click', () => act('/api/fund/resume'));
     opt('#btn-fund-requote', n => n.addEventListener('click', reviewRecovery));
     $('#btn-fund-reset').addEventListener('click', () => act('/api/fund/reset'));
+    opt('#btn-fund-dismiss', n => n.addEventListener('click', () => {
+      if (typeof Trade !== 'undefined' && Trade.dismissNotice('buy', LAST?.job)) {
+        render(LAST); $('#btn-trade-refresh').focus();
+      }
+    }));
     const assets = $('#fund-assets');
     assets.addEventListener('click', (e) => {
       const recalculate = e.target.closest('button[data-requote]');
@@ -515,13 +520,16 @@ const Fund = (() => {
     }
 
     const j = st.job;
+    // Scope this read to the incoming account, including its first refresh.
+    const dismissed = typeof Trade !== 'undefined' && Trade.isNoticeDismissed('buy', j, st.ethAddress);
     const jobActive = st.tradeBlocked || (j && !['done', 'error'].includes(j.status));
     $('#fund-idle').hidden = !!jobActive || (j && j.status === 'error');
-    $('#fund-job').hidden = !j || !!st.tradeBlocked;
+    $('#fund-job').hidden = !j || !!st.tradeBlocked || dismissed;
     opt('#fund-convert-busy', (n) => { n.hidden = !$('#fund-idle').hidden; n.textContent = st.tradeBlocked ? 'A sale or withdrawal is in progress. Follow its progress below.' : 'A conversion is in progress. Follow its progress below.'; });
-    opt('#fund-progress-card', n => { n.hidden = !j || !!st.tradeBlocked; });
+    opt('#fund-progress-card', n => { n.hidden = !j || !!st.tradeBlocked || dismissed; });
+    opt('#btn-fund-dismiss', n => { n.hidden = !j || j.status !== 'done'; });
     opt('#fund-land-idle', (n) => { n.hidden = !!j; });
-    opt('#tabdot-convert', (n) => { n.hidden = !j; n.classList.toggle('pulse', !!(j && needsTap(j))); });
+    opt('#tabdot-convert', (n) => { n.hidden = !j || dismissed; n.classList.toggle('pulse', !!(j && needsTap(j))); });
     /* KOIN landing while the person is on another tab deserves a word. */
     if (j && j.status === 'done' && LAST_JOB_STATUS && LAST_JOB_STATUS !== 'done') {
       CTX.onKoinMoved?.();
