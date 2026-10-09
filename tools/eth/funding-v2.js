@@ -31,6 +31,9 @@ const GAS = {
   bridge_token: 250000n, deposit_eth: 180000n,
   request_signatures: 65000n,
 };
+const stableAssetOf = j => j.feePlan?.stableAsset || 'usdt';
+const stableTokenOf = j => RC.stableToken(stableAssetOf(j));
+// Legacy state/amount names remain durable; feePlan.stableAsset binds the token.
 const STABLE = new Set(["usdc", "usdt"]);
 const NATIVE_C = ["swap_eth_usdt", "approve_permit2_reset", "approve_permit2", "approve_ur", "swap_usdt_vkoin", "approve_bridge", "bridge_token"];
 const TOKEN_C = ["approve_permit2_reset", "approve_permit2", "approve_ur", "swap_usdt_vkoin", "approve_bridge", "bridge_token"];
@@ -104,6 +107,7 @@ function create(ctx) {
 
   async function makePlan(account, asset, amount, route, m, solQuote) {
     const p = await ctx.provider(), t = ctx.transit(account);
+    const stableAsset = route === 'D' ? 'usdc' : 'usdt';
     const own = BigInt(await p.getBalance(t.ethAddress, "latest"));
     const value = asset === "eth" ? amount : asset === "sol"
       ? BigInt(solQuote.valueWei) : A.ceilDiv(amount * 10n ** 18n, m.price);
@@ -113,12 +117,12 @@ function create(ctx) {
     const payTo = recipient();
     if (serviceWei > 0n && !payTo) throw new Error("The conversion fee recipient is not configured");
     let tail = route === "B" ? ["deposit_eth"] : route === "S" ? ["approve_bridge", "bridge_token"]
-      : asset === "usdc" ? ["approve_v3_usdc", "swap_usdc_usdt", ...TOKEN_C]
+      : asset === "usdc" ? (route === "D" ? [...TOKEN_C] : ["approve_v3_usdc", "swap_usdc_usdt", ...TOKEN_C])
       : asset === "usdt" ? [...TOKEN_C] : [...NATIVE_C];
     // Existing allowances remove unnecessary gas from the estimate. Permit2's
     // own expiration is checked separately; later reads still verify it.
     if (tail.includes("approve_permit2")) {
-      const allowance = await swap.allowance(p, RC.USDT, t.ethAddress, RC.PERMIT2);
+      const allowance = await swap.allowance(p, RC.stableToken(stableAsset), t.ethAddress, RC.PERMIT2);
       if (BigInt(allowance) >= swap.MAX_UINT160) tail = tail.filter((s) => !s.startsWith("approve_permit2"));
       else if (BigInt(allowance) === 0n) tail = tail.filter((s) => s !== "approve_permit2_reset");
     }
@@ -184,11 +188,11 @@ function create(ctx) {
         network: S.network, provider: ctx.koinosProvider() });
       output = { koinOut: String(q.amountOut), koinOutMin: String(q.amountOutMin) };
     } else if (route === "S") output = { koinOut: String(solQuote.outAmount), koinOutMin: String(solQuote.outAmountMin) };
-    else if (asset === "usdc") output = await quotes.quoteUsdcToVkoin({ usdcSats: input, slippageBps: S.slippageBps, provider: p });
+    else if (asset === "usdc") output = await quotes.quoteUsdcToVkoin({ usdcSats: input, slippageBps: S.slippageBps, provider: p, stableAsset });
     else if (asset === "usdt") {
       const k = await quotes.quoteVkoinOut({ usdtSats: input, provider: p });
       output = { koinOut: String(k), koinOutMin: String(quotes.applySlippage(k, S.slippageBps)) };
-    } else output = await quotes.quoteEthToVkoin({ amountEth: eth(input), slippageBps: S.slippageBps, provider: p });
+    } else output = await quotes.quoteEthToVkoin({ amountEth: eth(input), slippageBps: S.slippageBps, provider: p, stableAsset });
     if (route === "T") {
       const worst = positive(BigInt(solQuote.outAmountMin) * 10n ** 10n - tailGasWei - collectionGasWei - repaymentMax,
         "The minimum Solana output would not cover gas and repayment");
@@ -205,14 +209,14 @@ function create(ctx) {
     // Rank routes on output minus fees paid from an existing ETH balance as
     // well. The displayed delivery amount itself must not subtract them twice.
     const externalCost = ownEthRequiredWei > 0n
-      ? BigInt((await quotes.quoteEthToVkoin({ amountEth: eth(ownEthRequiredWei), slippageBps: 0, provider: p })).koinOut) : 0n;
+      ? BigInt((await quotes.quoteEthToVkoin({ amountEth: eth(ownEthRequiredWei), slippageBps: 0, provider: p, stableAsset })).koinOut) : 0n;
     const comparisonKoinOut = A.shortfall(BigInt(output.koinOut), externalCost);
     const now = Date.now();
     return A.serialize({ version: 2, id: crypto.randomUUID(), account, asset, route, inputAmount: amount,
       createdAt: now, expiresAt: now + cfg().quoteSeconds * 1000, priceTimestamp: now,
       feeRecipient: payTo, sponsorAddress: sponsorMax > 0n ? sponsorAddress() : null,
       maxFeePerGas: m.ceiling, priorityFeePerGas: m.priority, ethUsdUnits: m.price,
-      gasLimits: cost.gasLimits, gasMaxWei: cost.maxGasWei, estimatedFeeWei: estimatedFee, maxFeeWei: maxFee,
+      stableAsset, gasLimits: cost.gasLimits, gasMaxWei: cost.maxGasWei, estimatedFeeWei: estimatedFee, maxFeeWei: maxFee,
       serviceWei, riskBps: cfg().riskBps, sponsorMaxWei: sponsorMax, advanceMaxWei: advance,
       sponsoredRedeem, recoveryWei, recovery: recoveryQuote, preSteps, tail, tailGasWei, collectionGasWei,
       koinOut: output.koinOut, koinOutMin: output.koinOutMin, comparisonKoinOut, nativeInputWei: input, valueWei: value,
@@ -232,7 +236,7 @@ function create(ctx) {
     const warnings = [];
     if (feeUsd >= S.fee.warnUsd) warnings.push(`estimated fees are $${feeUsd.toFixed(2)}`);
     if (pct != null && pct >= S.fee.warnPct) warnings.push(`that is ${pct.toFixed(1)}% of this conversion`);
-    return { ...routes.descriptor(plan.route), ...extra,
+    return { ...routes.descriptor(plan.route), ...(plan.route === "D" && plan.asset === "usdc" ? { steps: ["Swap USDC → vKOIN (Uniswap)", "Bridge vKOIN → KOIN (Vortex, 1:1)"] } : {}), ...extra,
       quoteId: plan.id, quoteExpiresAt: plan.expiresAt, feeModel: 2,
       koinOut: plan.koinOut, koinOutMin: plan.koinOutMin, comparisonKoinOut: plan.comparisonKoinOut, minimumConditional: true,
       feeEth: eth(plan.estimatedFeeWei), feeUsd: Number(feeUsd.toFixed(2)), feePct: pct,
@@ -246,7 +250,7 @@ function create(ctx) {
   }
   async function quote(account, asset, amount) {
     const m = await market();
-    const choices = asset === "sol" ? ["T", "S"] : asset === "eth" ? ["C", "B"] : ["C"];
+    const choices = asset === "sol" ? ["T", "S"] : asset === "eth" ? ["C", "D", "B"] : asset === "usdc" ? ["C", "D"] : ["C"];
     const solResults = asset === "sol" ? await Promise.allSettled(choices.map((route) =>
       jup.quote({ amount, slippageBps: S.slippageBps, outputMint: route === "T" ? SC.WETH_SOL_MINT : SC.VKOIN_SOL_MINT }))) : [];
     const tQuote = solResults[0] && solResults[0].status === "fulfilled" ? solResults[0].value : null;
@@ -287,6 +291,7 @@ function create(ctx) {
         estKoinOut: plan.koinOut, estFeeEth: eth(plan.estimatedFeeWei),
         status: asset === "sol" ? "sol_swap" : BigInt(plan.advanceMaxWei) > 0n ? "front_gas"
           : plan.recovery ? (plan.preSteps[0] || "gas_buy_eth") : "collect_fee",
+        ...(asset === "usdc" && route === "D" ? { usdtSats: amount.toString() } : {}),
         ...(asset === "eth" ? { amountWei: plan.nativeInputWei, amountEth: eth(plan.nativeInputWei) }
           : asset === "sol" ? { solLamports: amount.toString(), amountSol: units(asset, amount), solFrom: t.solAddress,
             solTokenBefore: (route === "T" ? balances.solWethSats : balances.solVkoinSats) || "0" }
@@ -320,7 +325,7 @@ function create(ctx) {
           if (await wormhole.isRedeemedOnEthereum(p, j.vaaEvmHash)) throw new Error('The bridge transfer was already redeemed. Use Retry to reconcile it.');
           if (q.plan.sponsoredRedeem && (await sponsorFor()).address.toLowerCase() !== String(q.plan.sponsorAddress).toLowerCase()) throw new Error('The original gas sponsor must remain configured until this job is settled');
           await capacity(BigInt(q.plan.sponsorMaxWei), { price: BigInt(q.plan.ethUsdUnits) }, j.id);
-        } else if (BigInt(await swap.balanceOf(p, RC.USDT, j.ethFrom)) < BigInt(j.usdtSats)) throw new Error("The USDT balance changed; the conversion needs reconciliation.");
+        } else if (BigInt(await swap.balanceOf(p, stableTokenOf(j), j.ethFrom)) < BigInt(j.usdtSats)) throw new Error("The USDT balance changed; the conversion needs reconciliation.");
         const updated = save(account, { ...j, feePlan: q.plan, estKoinOut: q.plan.koinOut,
           estFeeEth: eth(q.plan.estimatedFeeWei), status: j.failedAt, failedAt: null,
           error: null, lastError: null, transientCount: 0,
@@ -379,7 +384,7 @@ function create(ctx) {
       const cost = stepCosts(remaining, m);
       const paidGas = sum(Object.values(j.ethReceipts || {}).map(x => x.gasWei));
       const paidFee = BigInt(j.feePlan.serviceWei) + A.bps(A.costs(j).sponsor, j.feePlan.riskBps);
-      const koinOut = positive(BigInt(await quotes.quoteVkoinOut({ usdtSats: j.usdtSats, provider: p })), "No KOIN quote is available");
+      const koinOut = positive(BigInt(await quotes.quoteVkoinOut({ usdtSats: j.usdtSats, provider: p, stableAsset: stableAssetOf(j) })), "No KOIN quote is available");
       const plan = A.serialize({ ...j.feePlan, maxFeePerGas: m.ceiling, priorityFeePerGas: m.priority,
         gasLimits: { ...j.feePlan.gasLimits, ...cost.gasLimits },
         gasMaxWei: paidGas + cost.maxGasWei,
@@ -392,7 +397,7 @@ function create(ctx) {
       if (recoveryQuotes.size >= 2000) recoveryQuotes.delete(recoveryQuotes.keys().next().value);
       recoveryQuotes.set(id, { account, snapshot, expiresAt, plan, remainingGasWei: cost.maxGasWei });
       const available = BigInt(await p.getBalance(j.ethFrom, "latest"));
-      return { quote: { quoteId: id, expiresAt, usdt: units("usdt", j.usdtSats),
+      return { quote: { quoteId: id, expiresAt, stableAsset: stableAssetOf(j), usdt: units("usdt", j.usdtSats),
         koinOut: String(koinOut), koinOutMin: plan.koinOutMin,
         remainingGasMaxEth: eth(cost.maxGasWei), totalMaxFeeEth: eth(plan.maxFeeWei),
         additionalEthNeeded: eth(A.shortfall(cost.maxGasWei, available)),
@@ -541,7 +546,7 @@ function executor({ ctx, S, cfg, locked, walletFor, sponsorFor, save, capacity }
       case "approve_v3_usdc": return setState(account, j, "swap_usdc_usdt");
       case "swap_usdc_usdt":
       case "swap_eth_usdt": {
-        const got = positive(await delivered(j, RC.USDT, j.usdtBefore), "The swap produced no USDT");
+        const got = positive(await delivered(j, stableTokenOf(j), j.usdtBefore), "The swap produced no stablecoin");
         const next = plan.tail.find((s) => s.startsWith("approve_permit2")) || "approve_ur";
         return setState(account, j, next, { usdtSats: got.toString() });
       }
@@ -641,40 +646,40 @@ function executor({ ctx, S, cfg, locked, walletFor, sponsorFor, save, capacity }
         }
         case "swap_usdc_usdt": {
           const q = await quotes.quoteUsdcOut({ usdcSats: j.usdcSats, provider: p });
-          j = save(account, { ...j, usdtBefore: String(await swap.balanceOf(p, RC.USDT, wallet.address)) });
+          j = save(account, { ...j, usdtBefore: String(await swap.balanceOf(p, stableTokenOf(j), wallet.address)) });
           return send(account, j, swap.buildUsdcToUsdtTx({ recipient: wallet.address, usdcAmount: j.usdcSats,
             fee: q.fee, minUsdtOut: quotes.applySlippage(q.usdt, j.slippageBps) }));
         }
         case "swap_eth_usdt": {
-          const q = await quotes.quoteUsdtOut({ amountWei: j.amountWei, provider: p });
-          j = save(account, { ...j, usdtBefore: String(await swap.balanceOf(p, RC.USDT, wallet.address)) });
+          const q = await quotes.quoteUsdtOut({ amountWei: j.amountWei, provider: p, stableAsset: stableAssetOf(j) });
+          j = save(account, { ...j, usdtBefore: String(await swap.balanceOf(p, stableTokenOf(j), wallet.address)) });
           return send(account, j, swap.buildEthToUsdtTx({ recipient: wallet.address, amountWei: j.amountWei,
-            fee: q.fee, minUsdtOut: quotes.applySlippage(q.usdt, j.slippageBps) }));
+            fee: q.fee, minUsdtOut: quotes.applySlippage(q.usdt, j.slippageBps), stableAsset: stableAssetOf(j) }));
         }
         case "approve_permit2_reset":
         case "approve_permit2": {
-          const current = BigInt(await swap.allowance(p, RC.USDT, wallet.address, RC.PERMIT2));
+          const current = BigInt(await swap.allowance(p, stableTokenOf(j), wallet.address, RC.PERMIT2));
           if (current >= BigInt(j.usdtSats)) return setState(account, j, "approve_ur");
           if (j.status === "approve_permit2_reset" && current === 0n) return setState(account, j, "approve_permit2");
-          return send(account, j, swap.buildApproveTx(RC.USDT, RC.PERMIT2, j.status === "approve_permit2_reset" ? 0n : swap.MAX_UINT256));
+          return send(account, j, swap.buildApproveTx(stableTokenOf(j), RC.PERMIT2, j.status === "approve_permit2_reset" ? 0n : swap.MAX_UINT256));
         }
         case "approve_ur": {
-          const a = await swap.permit2Allowance(p, wallet.address, RC.USDT, RC.UNIVERSAL_ROUTER);
+          const a = await swap.permit2Allowance(p, wallet.address, stableTokenOf(j), RC.UNIVERSAL_ROUTER);
           if (swap.permit2CoversSwap(a, j.usdtSats, now + 300)) return setState(account, j, "swap_usdt_vkoin");
-          return send(account, j, swap.buildPermit2ApproveTx({ token: RC.USDT, spender: RC.UNIVERSAL_ROUTER,
+          return send(account, j, swap.buildPermit2ApproveTx({ token: stableTokenOf(j), spender: RC.UNIVERSAL_ROUTER,
             amount: j.usdtSats, expiration: now + 3600 }));
         }
         case "swap_usdt_vkoin": {
           // Retry resumes this exact step, sometimes hours after approval.
           // Pending/confirmed transactions were reconciled above: only a NEW
           // swap may return to approval, never one that could already be sent.
-          const a = await swap.permit2Allowance(p, wallet.address, RC.USDT, RC.UNIVERSAL_ROUTER);
+          const a = await swap.permit2Allowance(p, wallet.address, stableTokenOf(j), RC.UNIVERSAL_ROUTER);
           if (!swap.permit2CoversSwap(a, j.usdtSats, now + 300)) return setState(account, j, "approve_ur");
-          const q = BigInt(await quotes.quoteVkoinOut({ usdtSats: j.usdtSats, provider: p }));
+          const q = BigInt(await quotes.quoteVkoinOut({ usdtSats: j.usdtSats, provider: p, stableAsset: stableAssetOf(j) }));
           if (q < BigInt(plan.koinOutMin)) throw new Error("The market moved below your approved KOIN minimum; wait and Retry");
           j = save(account, { ...j, vkoinBefore: String(await swap.balanceOf(p, RC.VKOIN, wallet.address)) });
           return send(account, j, swap.buildUsdtToVkoinTx({ usdtAmount: j.usdtSats,
-            minVkoinOut: A.max(BigInt(plan.koinOutMin), quotes.applySlippage(q, j.slippageBps)), deadline: now + 300 }));
+            minVkoinOut: A.max(BigInt(plan.koinOutMin), quotes.applySlippage(q, j.slippageBps)), deadline: now + 300, stableAsset: stableAssetOf(j) }));
         }
         case "approve_bridge": {
           const to = BC.BRIDGE[S.network].ethBridge;

@@ -32,6 +32,11 @@ const ROUTES = {
     steps: ["Swap ETH → USDT → vKOIN (Uniswap)", "Bridge vKOIN → KOIN (Vortex, 1:1)"],
     note: "Uses the deeper vKOIN/USDT market, so usually far more KOIN per ETH.",
   },
+  D: {
+    id: "D", label: "Swap through USDC, bridge to KOIN",
+    steps: ["Swap ETH → USDC → vKOIN (Uniswap)", "Bridge vKOIN → KOIN (Vortex, 1:1)"],
+    note: "Uses the direct USDC/vKOIN pool. Compared after network and conversion fees.",
+  },
   S: {
     id: "S",
     label: "Swap SOL to vKOIN, bridge it home",

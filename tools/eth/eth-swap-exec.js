@@ -78,12 +78,12 @@ const SWAP_ROUTER_ABI = [
   "function exactInputSingle((address tokenIn,address tokenOut,uint24 fee,address recipient,uint256 amountIn,uint256 amountOutMinimum,uint160 sqrtPriceLimitX96)) payable returns (uint256)",
 ];
 // Native ETH in: send value = amountWei with tokenIn = WETH; SwapRouter02 wraps it.
-function buildEthToUsdtTx({ recipient, amountWei, fee, minUsdtOut }) {
+function buildEthToUsdtTx({ recipient, amountWei, fee, minUsdtOut, stableAsset = 'usdt' }) {
   if (!recipient) throw new Error("recipient required");
   const amt = BigInt(amountWei);
   if (amt <= 0n) throw new Error("amountWei must be > 0");
   const data = new ethers.Interface(SWAP_ROUTER_ABI).encodeFunctionData("exactInputSingle", [
-    { tokenIn: RC.WETH, tokenOut: RC.USDT, fee, recipient, amountIn: amt, amountOutMinimum: BigInt(minUsdtOut), sqrtPriceLimitX96: 0 },
+    { tokenIn: RC.WETH, tokenOut: RC.stableToken(stableAsset), fee, recipient, amountIn: amt, amountOutMinimum: BigInt(minUsdtOut), sqrtPriceLimitX96: 0 },
   ]);
   return { to: RC.V3_SWAP_ROUTER, data, value: amt };
 }
@@ -135,21 +135,22 @@ const hx = (n) => n.toString(16).padStart(2, "0");
 // USDT is the pool's currency1, so USDT->vKOIN is currency1->0 (zeroForOne=false).
 // SETTLE_ALL pulls the USDT from the user via Permit2; TAKE_ALL sends vKOIN to the
 // user and reverts unless at least `minVkoinOut` is delivered (the slippage floor).
-function buildUsdtToVkoinTx({ usdtAmount, minVkoinOut, deadline }) {
+function buildUsdtToVkoinTx({ usdtAmount, minVkoinOut, deadline, stableAsset = 'usdt' }) {
   const amtIn = BigInt(usdtAmount);
   const minOut = BigInt(minVkoinOut);
   if (amtIn <= 0n) throw new Error("usdtAmount must be > 0");
-  if (amtIn > MAX_UINT160) throw new Error("usdtAmount too large"); // uint128 in swap params
-  const k = RC.VKOIN_USDT_POOL;
+  if (amtIn >= 1n << 128n || minOut < 0n || minOut >= 1n << 128n) throw new Error("Swap amount exceeds uint128");
+  RC.stableToken(stableAsset);
+  const k = stableAsset === 'usdc' ? RC.VKOIN_USDC_POOL : RC.VKOIN_USDT_POOL;
   const poolKey = [k.currency0, k.currency1, k.fee, k.tickSpacing, k.hooks];
 
   const commands = "0x" + hx(CMD_V4_SWAP);
   const actions = "0x" + hx(ACT_SWAP_EXACT_IN_SINGLE) + hx(ACT_SETTLE_ALL) + hx(ACT_TAKE_ALL);
   const swapParams = coder.encode(
     ["tuple(tuple(address,address,uint24,int24,address),bool,uint128,uint128,bytes)"],
-    [[poolKey, false, amtIn, minOut, "0x"]]
+    [[poolKey, stableAsset === "usdc", amtIn, minOut, "0x"]]
   );
-  const settleParams = coder.encode(["address", "uint256"], [RC.USDT, amtIn]); // pay exactly amountIn USDT
+  const settleParams = coder.encode(["address", "uint256"], [RC.stableToken(stableAsset), amtIn]); // pay exactly amountIn USDT
   const takeParams = coder.encode(["address", "uint256"], [RC.VKOIN, minOut]); // require >= minOut vKOIN
   const input = coder.encode(["bytes", "bytes[]"], [actions, [swapParams, settleParams, takeParams]]);
 

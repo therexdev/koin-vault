@@ -26,13 +26,13 @@ function applySlippage(amount, slippageBps) {
 
 // Best WETH→USDT quote across the candidate fee tiers. Returns { usdt, fee } or
 // throws if no tier has liquidity.
-async function quoteEthToUsdt(quoter, amountWei) {
+async function quoteEthToUsdt(quoter, amountWei, stableAsset = 'usdt') {
   let best = 0n;
   let bestFee = null;
   for (const fee of RC.ETH_USDT_FEES) {
     try {
       const r = await quoter.quoteExactInputSingle.staticCall({
-        tokenIn: RC.WETH, tokenOut: RC.USDT, amountIn: amountWei, fee, sqrtPriceLimitX96: 0,
+        tokenIn: RC.WETH, tokenOut: RC.stableToken(stableAsset), amountIn: amountWei, fee, sqrtPriceLimitX96: 0,
       });
       if (r[0] > best) { best = r[0]; bestFee = fee; }
     } catch {
@@ -44,11 +44,12 @@ async function quoteEthToUsdt(quoter, amountWei) {
 }
 
 // USDT→vKOIN quote through the v4 pool. USDT is currency1, so zeroForOne=false.
-async function quoteUsdtToVkoin(quoter, usdtAmount) {
-  const k = RC.VKOIN_USDT_POOL;
+async function quoteUsdtToVkoin(quoter, usdtAmount, stableAsset = 'usdt') {
+  RC.stableToken(stableAsset);
+  const k = stableAsset === 'usdc' ? RC.VKOIN_USDC_POOL : RC.VKOIN_USDT_POOL;
   const r = await quoter.quoteExactInputSingle.staticCall({
     poolKey: { currency0: k.currency0, currency1: k.currency1, fee: k.fee, tickSpacing: k.tickSpacing, hooks: k.hooks },
-    zeroForOne: false,
+    zeroForOne: stableAsset === 'usdc',
     exactAmount: usdtAmount,
     hookData: "0x",
   });
@@ -58,16 +59,16 @@ async function quoteUsdtToVkoin(quoter, usdtAmount) {
 // Full read-only quote for ETH → USDT → vKOIN (== KOIN, 1:1). Never signs.
 // Returns amounts as strings (BigInt-safe): koinOut is vKOIN satoshis (8-dec),
 // which equals the native KOIN satoshis delivered after the 1:1 bridge.
-async function quoteEthToVkoin({ amountEth, slippageBps = 150, provider } = {}) {
+async function quoteEthToVkoin({ amountEth, slippageBps = 150, provider, stableAsset = 'usdt' } = {}) {
   const amountWei = ethers.parseEther(String(amountEth));
   if (amountWei <= 0n) throw new Error("Amount must be greater than 0");
   const p = provider || (await makeProvider());
 
   const v3 = new ethers.Contract(RC.V3_QUOTER, V3_QUOTER_ABI, p);
-  const { usdt, fee } = await quoteEthToUsdt(v3, amountWei);
+  const { usdt, fee } = await quoteEthToUsdt(v3, amountWei, stableAsset);
 
   const v4 = new ethers.Contract(RC.V4_QUOTER, V4_QUOTER_ABI, p);
-  const koin = await quoteUsdtToVkoin(v4, usdt);
+  const koin = await quoteUsdtToVkoin(v4, usdt, stableAsset);
   if (koin <= 0n) throw new Error("USDT→vKOIN quote returned nothing (pool illiquid)");
 
   return {
@@ -100,14 +101,14 @@ async function quoteUsdcToUsdt(quoter, usdcAmount) {
 }
 
 // Full read-only quote for USDC → USDT → vKOIN (== KOIN, 1:1).
-async function quoteUsdcToVkoin({ usdcSats, slippageBps = 150, provider } = {}) {
+async function quoteUsdcToVkoin({ usdcSats, slippageBps = 150, provider, stableAsset = 'usdt' } = {}) {
   const amt = BigInt(usdcSats);
   if (amt <= 0n) throw new Error("Amount must be greater than 0");
   const p = provider || (await makeProvider());
   const v3 = new ethers.Contract(RC.V3_QUOTER, V3_QUOTER_ABI, p);
-  const { usdt, fee } = await quoteUsdcToUsdt(v3, amt);
+  const { usdt, fee } = stableAsset === 'usdc' ? { usdt: amt, fee: null } : await quoteUsdcToUsdt(v3, amt);
   const v4 = new ethers.Contract(RC.V4_QUOTER, V4_QUOTER_ABI, p);
-  const koin = await quoteUsdtToVkoin(v4, usdt);
+  const koin = await quoteUsdtToVkoin(v4, usdt, stableAsset);
   if (koin <= 0n) throw new Error("USDT→vKOIN quote returned nothing (pool illiquid)");
   return {
     usdcSats: amt.toString(),
@@ -121,17 +122,17 @@ async function quoteUsdcToVkoin({ usdcSats, slippageBps = 150, provider } = {}) 
 
 // Convenience wrappers the orchestrator uses to re-quote a single leg live right
 // before it swaps (fresh slippage floor on the actual amount).
-async function quoteUsdtOut({ amountWei, provider }) {
+async function quoteUsdtOut({ amountWei, provider, stableAsset = 'usdt' }) {
   const v3 = new ethers.Contract(RC.V3_QUOTER, V3_QUOTER_ABI, provider);
-  return await quoteEthToUsdt(v3, BigInt(amountWei)); // { usdt, fee }
+  return await quoteEthToUsdt(v3, BigInt(amountWei), stableAsset); // { usdt, fee }
 }
 async function quoteUsdcOut({ usdcSats, provider }) {
   const v3 = new ethers.Contract(RC.V3_QUOTER, V3_QUOTER_ABI, provider);
   return await quoteUsdcToUsdt(v3, BigInt(usdcSats)); // { usdt, fee }
 }
-async function quoteVkoinOut({ usdtSats, provider }) {
+async function quoteVkoinOut({ usdtSats, provider, stableAsset = 'usdt' }) {
   const v4 = new ethers.Contract(RC.V4_QUOTER, V4_QUOTER_ABI, provider);
-  return await quoteUsdtToVkoin(v4, BigInt(usdtSats)); // bigint vKOIN sats
+  return await quoteUsdtToVkoin(v4, BigInt(usdtSats), stableAsset); // bigint vKOIN sats
 }
 
 module.exports = {

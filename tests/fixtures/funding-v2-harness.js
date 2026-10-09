@@ -51,6 +51,7 @@ function harness({ own = "0", sponsor = "1", policy = {}, service = "1" } = {}) 
       if (opts.loseNextSend) { opts.loseNextSend = false; throw new Error("network lost before acknowledgement"); }
       if (receipts.has(hash)) return { hash }; // exact same transaction replay
       const sender = ethers.getAddress(tx.from), owner = j.ethFrom;
+      const stable = RC.stableToken(j.feePlan.stableAsset);
       const gasUsed = estimate(j.status), gasPrice = opts.gas;
       changeEth(sender, -gasUsed * gasPrice);
       const logs = [], success = !opts.revertNext;
@@ -90,13 +91,13 @@ function harness({ own = "0", sponsor = "1", policy = {}, service = "1" } = {}) 
             moveToken(RC.USDC, owner, tx.to, BigInt(j.usdcSats));
             moveToken(RC.USDT, tx.to, owner, BigInt(j.usdcSats)); break;
           }
-          case "swap_eth_usdt": moveToken(RC.USDT, tx.to, owner, BigInt(j.amountWei) * 3000000000n / 10n ** 18n); break;
+          case "swap_eth_usdt": moveToken(stable, tx.to, owner, BigInt(j.amountWei) * 3000000000n / 10n ** 18n); break;
           case "swap_usdt_vkoin": {
-            const key = allowanceKey(owner, RC.USDT, RC.UNIVERSAL_ROUTER), permit = permitAllowances.get(key);
+            const key = allowanceKey(owner, stable, RC.UNIVERSAL_ROUTER), permit = permitAllowances.get(key);
             assert.ok(permit && permit.expiration >= BigInt(Math.floor(Date.now() / 1000)), "the swap requires an unexpired Permit2 approval");
             assert.ok(permit.amount >= BigInt(j.usdtSats), "Permit2 must authorize the full swap amount");
             permitAllowances.set(key, { ...permit, amount: permit.amount - BigInt(j.usdtSats) });
-            moveToken(RC.USDT, owner, tx.to, BigInt(j.usdtSats));
+            moveToken(stable, owner, tx.to, BigInt(j.usdtSats));
             moveToken(RC.VKOIN, ethers.ZeroAddress, owner, BigInt(j.usdtSats) * 2000n); break;
           }
           case "bridge_token": moveToken(RC.VKOIN, owner, tx.to, BigInt(j.vkoinSats)); break;

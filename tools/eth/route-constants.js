@@ -27,7 +27,7 @@ const V3_QUOTER = "0x61fFE014bA17989E743c5F6cB21bF9697530B21e"; // QuoterV2
 const V4_QUOTER = "0x52F0E24D1c21C8A0cB1e5a5dD6198556BD9E1203";
 const V4_POOL_MANAGER = "0x000000000004444c5dc75cB358380D2e3dE08A90";
 
-// The vKOIN/USDT Uniswap-v4 pool — the only meaningful vKOIN liquidity. This
+// The vKOIN/USDT Uniswap-v4 pool. This
 // PoolKey hashes to the pool's on-chain id 0xd833…687da6 (verified). vKOIN sorts
 // below USDT, so it is currency0; a USDT→vKOIN swap is therefore currency1→0
 // (zeroForOne = false).
@@ -42,6 +42,17 @@ const VKOIN_USDT_POOL = {
 
 // WETH/USDT v3 fee tiers to try for the ETH→USDT leg, deepest first. Both are
 // very liquid, so this leg is effectively slippage-free at funding sizes.
+// Direct USDC/vKOIN v4 pool: key hash matched and Quoter checked on mainnet.
+// USDC sorts first, so buying vKOIN uses zeroForOne=true.
+const VKOIN_USDC_POOL = {
+  currency0: USDC, currency1: VKOIN, fee: 10000, tickSpacing: 200,
+  hooks: "0x0000000000000000000000000000000000000000",
+  id: "0xf3fb8ddbfb8845eb5caf0c7951a7bfc31826f6569ed4408a4d249b4de01b4fb4",
+};
+function stableToken(asset = 'usdt') {
+  if (asset !== 'usdt' && asset !== 'usdc') throw new Error('Unsupported route stablecoin');
+  return asset === 'usdc' ? USDC : USDT;
+}
 const ETH_USDT_FEES = [500, 3000];
 
 // USDC/USDT v3 fee tiers for the USDC deposit leg, deepest first — the 0.01%
@@ -62,7 +73,7 @@ module.exports = {
   V3_QUOTER,
   V4_QUOTER,
   V4_POOL_MANAGER,
-  VKOIN_USDT_POOL,
+  VKOIN_USDT_POOL, VKOIN_USDC_POOL, stableToken,
   ETH_USDT_FEES,
   USDC_USDT_FEES,
 };
