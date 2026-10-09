@@ -1,5 +1,6 @@
 "use strict";
 const assert = require("node:assert/strict");
+const { ethers } = require('ethers');
 const { harness, eth, A } = require("./fixtures/funding-v2-harness");
 const swap = require("../tools/eth/eth-swap-exec");
 
@@ -137,6 +138,30 @@ const swap = require("../tools/eth/eth-swap-exec");
     console.log("✓ concurrent jobs reserve distinct sponsor nonces even when the RPC lags");
   }
 
+  {
+    const h = harness();
+    await h.start('sol', 'T', '0.2'); h.arriveSol();
+    const cap = BigInt(h.jobs[h.account].feePlan.gasLimits.wh_redeem);
+    // The estimate fits the approved buffer, but padding it again would not.
+    h.sponsorWallet.estimateGas = async () => cap * 95n / 100n;
+    await h.engine.advance(h.account, h.jobs[h.account]);
+    const sent = ethers.Transaction.from(h.sends[0].raw);
+    assert.equal(sent.gasLimit, cap);
+    assert.equal(h.sends[0].state, 'wh_redeem');
+    await h.run();
+    assert.equal(A.costs(h.jobs[h.account]).debt, 0n);
+    console.log('✓ SOL with zero ETH uses the approved gas buffer and repays the sponsor');
+  }
+  {
+    const h = harness();
+    await h.start('sol', 'T', '0.2'); h.arriveSol();
+    const cap = BigInt(h.jobs[h.account].feePlan.gasLimits.wh_redeem);
+    h.sponsorWallet.estimateGas = async () => cap + 1n;
+    await assert.rejects(h.engine.advance(h.account, h.jobs[h.account]), /approved route budget/);
+    assert.equal(h.sends.length, 0);
+    assert.equal(A.costs(h.jobs[h.account]).sponsor, 0n);
+    console.log('✓ an estimate above the approved cap sends nothing and spends no sponsor funds');
+  }
   {
     const h = harness();
     await h.start(); h.opts.gas *= 10n;

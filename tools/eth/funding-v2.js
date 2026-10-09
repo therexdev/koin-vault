@@ -390,9 +390,12 @@ function executor({ ctx, S, cfg, locked, walletFor, sponsorFor, save, capacity }
       if (e.code !== "CALL_EXCEPTION") throw e;
       throw new Error(`Ethereum rejected this step before sending: ${swap.describeRevert(e)}. Retry rechecks the approval and keeps your existing limits.`, { cause: e });
     }
-    const limit = estimate + A.bps(estimate, cfg().gasHeadroomBps);
     const stepLimit = BigInt(plan.gasLimits[j.status] || 0);
-    if (limit > stepLimit) throw new Error("This step needs more gas than the approved route budget; no transaction was sent");
+    if (estimate > stepLimit) throw new Error("This step needs more gas than the approved route budget; no transaction was sent");
+    // The approved step limit already includes headroom. Use the remaining
+    // buffer without requiring a second full buffer beyond that ceiling.
+    const padded = estimate + A.bps(estimate, cfg().gasHeadroomBps);
+    const limit = padded < stepLimit ? padded : stepLimit;
     const f = requestFee(plan, await p.getFeeData());
     const capPrice = BigInt(f.maxFeePerGas ?? f.gasPrice);
     if (f.maxPriorityFeePerGas != null && f.maxPriorityFeePerGas > capPrice) throw new Error("The network tip exceeds the approved gas cap");

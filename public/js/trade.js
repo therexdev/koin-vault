@@ -69,7 +69,7 @@ const Trade = (() => {
     $('#trade-deposit-card').hidden = selected === 'vkoin';
     $('#trade-eth-actions').hidden = selected !== 'eth';
     $('#fund-sol-block').hidden = selected !== 'sol' || !state?.solAddress;
-    $('#fund-eth-label').textContent = selected === 'sol' ? 'Add ETH for network gas' : `Deposit ${symbol(selected)}`;
+    $('#fund-eth-label').textContent = selected === 'sol' ? 'ETH deposit (optional for supported sponsored routes)' : `Deposit ${symbol(selected)}`;
     $('#fund-eth-note').textContent = `Send only ${selected === 'sol' ? 'ETH' : symbol(selected)} on Ethereum mainnet. Tap the address to copy.`;
     $('#trade-deposit-title').textContent = selected === 'eth' ? 'Deposit or withdraw ETH' : `Deposit ${symbol(selected)}`;
     $('#trade-withdraw-note').hidden = !buying || !selected || ['eth', 'vkoin'].includes(selected);
