@@ -40,10 +40,13 @@ const units = (asset, n) => ethers.formatUnits(n, asset === "eth" ? 18 : asset =
 const positive = (n, why) => { if (n <= 0n) throw new Error(why); return n; };
 
 function canRequote(j) {
-  return !!(j?.feePlan?.version === 2 && j.status === "error" && j.settlementComplete
+  const bridgeRecovery = j?.asset === 'sol' && j.failedAt === 'wh_redeem'
+    && ['T', 'S'].includes(j.route) && j.vaa && j.vaaEvmHash && BigInt(j.vaaAmount || 0) > 0n
+    && !j.settlementComplete;
+  return !!(j?.feePlan?.version === 2 && j.status === "error" && (j.settlementComplete || bridgeRecovery)
     && !j.pendingEth && !j.confirmedEth && !j.pendingTx && !j.ethTxHash
-    && ["approve_permit2_reset", "approve_permit2", "approve_ur", "swap_usdt_vkoin"].includes(j.failedAt)
-    && BigInt(j.usdtSats || 0) > 0n && A.costs(j).debt === 0n);
+    && (bridgeRecovery || (["approve_permit2_reset", "approve_permit2", "approve_ur", "swap_usdt_vkoin"].includes(j.failedAt)
+    && BigInt(j.usdtSats || 0) > 0n)) && A.costs(j).debt === 0n);
 }
 
 function create(ctx) {
@@ -313,7 +316,11 @@ function create(ctx) {
         if (BigInt(await p.getBalance(j.ethFrom, "latest")) < BigInt(q.remainingGasWei)) {
           throw new Error(`Add ETH to your existing deposit address: this quote requires ${eth(q.remainingGasWei)} ETH available for remaining gas. Then review a fresh quote.`);
         }
-        if (BigInt(await swap.balanceOf(p, RC.USDT, j.ethFrom)) < BigInt(j.usdtSats)) throw new Error("The USDT balance changed; the conversion needs reconciliation.");
+        if (q.bridgeRecovery) {
+          if (await wormhole.isRedeemedOnEthereum(p, j.vaaEvmHash)) throw new Error('The bridge transfer was already redeemed. Use Retry to reconcile it.');
+          if (q.plan.sponsoredRedeem && (await sponsorFor()).address.toLowerCase() !== String(q.plan.sponsorAddress).toLowerCase()) throw new Error('The original gas sponsor must remain configured until this job is settled');
+          await capacity(BigInt(q.plan.sponsorMaxWei), { price: BigInt(q.plan.ethUsdUnits) }, j.id);
+        } else if (BigInt(await swap.balanceOf(p, RC.USDT, j.ethFrom)) < BigInt(j.usdtSats)) throw new Error("The USDT balance changed; the conversion needs reconciliation.");
         const updated = save(account, { ...j, feePlan: q.plan, estKoinOut: q.plan.koinOut,
           estFeeEth: eth(q.plan.estimatedFeeWei), status: j.failedAt, failedAt: null,
           error: null, lastError: null, transientCount: 0,
@@ -322,6 +329,50 @@ function create(ctx) {
         return { job: updated };
       }
       const m = await market();
+      if (j.failedAt === 'wh_redeem') {
+        if (await wormhole.isRedeemedOnEthereum(p, j.vaaEvmHash)) throw new Error('The bridge transfer was already redeemed. Use Retry to reconcile it.');
+        const available = BigInt(await p.getBalance(j.ethFrom, 'latest'));
+        const native = j.route === 'T';
+        const tx = wormhole.buildCompleteTransferTx(j.vaa, { unwrap: native });
+        const estimateWallet = native && available < BigInt(j.feePlan.gasLimits.wh_redeem) * m.ceiling
+          ? await sponsorFor() : await walletFor(account);
+        const redeemEstimate = positive(BigInt(await estimateWallet.estimateGas(tx)), 'Redemption gas could not be estimated');
+        const cost = stepCosts(['wh_redeem', 'collect_fee', ...j.feePlan.tail, 'request_signatures'], m);
+        cost.gasLimits.wh_redeem = redeemEstimate + A.bps(redeemEstimate, cfg().gasHeadroomBps);
+        cost.maxGasWei = sum(Object.values(cost.gasLimits)) * m.ceiling;
+        const redeemMax = cost.gasLimits.wh_redeem * m.ceiling;
+        const sponsoredRedeem = native && available < redeemMax;
+        const sponsorMax = sponsoredRedeem ? redeemMax : 0n;
+        if (sponsoredRedeem && (await sponsorFor()).address.toLowerCase() !== String(j.feePlan.sponsorAddress).toLowerCase()) throw new Error('The original gas sponsor must remain configured until this job is settled');
+        await capacity(sponsorMax, m, j.id);
+        const tailGas = sum([...j.feePlan.tail, 'request_signatures'].map(s => cost.gasLimits[s])) * m.ceiling;
+        const collectionGas = cost.gasLimits.collect_fee * m.ceiling;
+        const repaymentMax = BigInt(j.feePlan.serviceWei) + sponsorMax + A.bps(sponsorMax, j.feePlan.riskBps);
+        let output;
+        if (native) {
+          const input = positive(BigInt(j.vaaAmount) * 10n ** 10n - tailGas - collectionGas - repaymentMax,
+            'The bridged ETH cannot cover the updated gas and repayment budget; no transaction was sent');
+          output = await quotes.quoteEthToVkoin({ amountEth: eth(input), slippageBps: j.slippageBps, provider: p });
+        } else output = { koinOut: String(j.vaaAmount), koinOutMin: String(j.vaaAmount) };
+        const paidGas = sum(Object.values(j.ethReceipts || {}).map(x => x.gasWei));
+        const plan = A.serialize({ ...j.feePlan, maxFeePerGas: m.ceiling, priorityFeePerGas: m.priority,
+          ethUsdUnits: m.price, gasLimits: { ...j.feePlan.gasLimits, ...cost.gasLimits },
+          gasMaxWei: paidGas + cost.maxGasWei, sponsorMaxWei: sponsorMax, sponsoredRedeem,
+          tailGasWei: tailGas, collectionGasWei: collectionGas,
+          estimatedFeeWei: paidGas + cost.maxGasWei + BigInt(j.feePlan.serviceWei) + A.bps(sponsorMax, j.feePlan.riskBps),
+          maxFeeWei: paidGas + cost.maxGasWei + BigInt(j.feePlan.serviceWei) + A.bps(sponsorMax, j.feePlan.riskBps),
+          koinOut: output.koinOut, koinOutMin: output.koinOutMin });
+        const ownRequired = native ? (sponsoredRedeem ? 0n : redeemMax) : cost.maxGasWei + repaymentMax;
+        const id = crypto.randomUUID(), expiresAt = Date.now() + cfg().quoteSeconds * 1000;
+        for (const [key, q] of recoveryQuotes) if (q.expiresAt <= Date.now() || q.account === account) recoveryQuotes.delete(key);
+        if (recoveryQuotes.size >= 2000) recoveryQuotes.delete(recoveryQuotes.keys().next().value);
+        recoveryQuotes.set(id, { account, snapshot, expiresAt, plan, remainingGasWei: ownRequired, bridgeRecovery: true });
+        return { quote: { quoteId: id, expiresAt, bridgeRecovery: true, sponsoredRedeem,
+          koinOut: plan.koinOut, koinOutMin: plan.koinOutMin,
+          remainingGasMaxEth: eth(cost.maxGasWei), totalMaxFeeEth: eth(plan.maxFeeWei),
+          additionalEthNeeded: eth(A.shortfall(ownRequired, available)),
+          previousKoinOutMin: j.feePlan.koinOutMin, previousMaxFeeEth: eth(j.feePlan.maxFeeWei) } };
+      }
       const steps = ["approve_permit2_reset", "approve_permit2", "approve_ur", "swap_usdt_vkoin", "approve_bridge", "bridge_token", "request_signatures"];
       // Keep a Permit2 renewal reserve even if the swap itself is next.
       const remaining = steps.slice(Math.min(steps.indexOf(j.failedAt), 2));
@@ -391,7 +442,7 @@ function executor({ ctx, S, cfg, locked, walletFor, sponsorFor, save, capacity }
       throw new Error(`Ethereum rejected this step before sending: ${swap.describeRevert(e)}. Retry rechecks the approval and keeps your existing limits.`, { cause: e });
     }
     const stepLimit = BigInt(plan.gasLimits[j.status] || 0);
-    if (estimate > stepLimit) throw new Error("This step needs more gas than the approved route budget; no transaction was sent");
+    if (estimate > stepLimit) throw new Error(`This step needs more gas than the approved route budget (${j.status}: estimated ${estimate}, approved ${stepLimit}); no transaction was sent`);
     // The approved step limit already includes headroom. Use the remaining
     // buffer without requiring a second full buffer beyond that ceiling.
     const padded = estimate + A.bps(estimate, cfg().gasHeadroomBps);

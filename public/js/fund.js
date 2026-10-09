@@ -210,7 +210,9 @@ const Fund = (() => {
         return;
       }
       const amount = v => (Number(v) / 1e8).toLocaleString(undefined, { maximumFractionDigits: 8 });
-      const ok = window.confirm(`Continue this conversion with updated terms?\n\nUSDT to convert: ${q.usdt}\nEstimated KOIN: ${amount(q.koinOut)}\nNew minimum KOIN: ${amount(q.koinOutMin)} (previous: ${amount(q.previousKoinOutMin)})\nMaximum remaining gas: ${q.remainingGasMaxEth} ETH\nTotal fee ceiling including recorded costs: ${q.totalMaxFeeEth} ETH (previous: ${q.previousMaxFeeEth})\n\nCompleted steps stay recorded. No new platform fee. Gas is paid from your existing ETH balance. Approve and continue?`);
+      const ok = q.bridgeRecovery
+        ? window.confirm(`Resume your existing Wormhole transfer?\n\nEstimated KOIN: ${amount(q.koinOut)}\nNew minimum KOIN: ${amount(q.koinOutMin)}\nMaximum remaining gas: ${q.remainingGasMaxEth} ETH\nTotal fee ceiling: ${q.totalMaxFeeEth} ETH (previous: ${q.previousMaxFeeEth})\n\n${q.sponsoredRedeem ? 'The fund pays redemption gas and recovers it from the bridged ETH.' : 'Your existing ETH pays redemption gas.'} Remaining route costs are included in the updated quote. Your original SOL transfer stays recorded. Approve and continue?`)
+        : window.confirm(`Continue this conversion with updated terms?\n\nUSDT to convert: ${q.usdt}\nEstimated KOIN: ${amount(q.koinOut)}\nNew minimum KOIN: ${amount(q.koinOutMin)} (previous: ${amount(q.previousKoinOutMin)})\nMaximum remaining gas: ${q.remainingGasMaxEth} ETH\nTotal fee ceiling including recorded costs: ${q.totalMaxFeeEth} ETH (previous: ${q.previousMaxFeeEth})\n\nCompleted steps stay recorded. No new platform fee. Gas is paid from your existing ETH balance. Approve and continue?`);
       if (!ok) { say('Quote not approved. Your existing limits are unchanged.'); return; }
       await CTX.api('/api/fund/requote', { credentialId: CTX.credentialId(), quoteId: q.quoteId });
       say('Updated quote approved. Continuing your conversion.');

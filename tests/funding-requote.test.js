@@ -13,6 +13,57 @@ async function stuck() {
   return h;
 }
 (async () => {
+  for (const own of ['0', '0.01233689']) {
+    const h = harness({ own });
+    await h.start('sol', 'T', '0.2'); h.arriveSol();
+    const cap = BigInt(h.jobs[h.account].feePlan.gasLimits.wh_redeem);
+    h.wallets[h.account].estimateGas = async () => cap * 2n;
+    h.sponsorWallet.estimateGas = async () => cap * 2n;
+    await assert.rejects(h.engine.advance(h.account, h.jobs[h.account]), /approved route budget/);
+    h.ctx.save(h.account, { ...h.jobs[h.account], status: 'error', failedAt: 'wh_redeem' });
+    const before = JSON.stringify(h.jobs[h.account]);
+    const { quote } = await h.engine.requote(h.account);
+    assert.equal(JSON.stringify(h.jobs[h.account]), before);
+    assert.equal(h.sends.length, 0);
+    assert.equal(quote.additionalEthNeeded, '0.0');
+    assert.equal(quote.sponsoredRedeem, own === '0');
+    const saved = h.jobs[h.account];
+    for (const key of ['pendingEth', 'confirmedEth', 'pendingTx', 'ethTxHash']) {
+      h.jobs[h.account] = { ...saved, [key]: {} };
+      assert.equal(canRequote(h.jobs[h.account]), false);
+      await assert.rejects(h.engine.requote(h.account, quote.quoteId), /reconcile/);
+    }
+    h.jobs[h.account] = saved;
+    const wormhole = require('../tools/sol/wormhole');
+    const originalRedeemed = wormhole.isRedeemedOnEthereum;
+    wormhole.isRedeemedOnEthereum = async () => true;
+    try { await assert.rejects(h.engine.requote(h.account, quote.quoteId), /already redeemed/); }
+    finally { wormhole.isRedeemedOnEthereum = originalRedeemed; }
+    if (own === '0') {
+      const balance = h.balance(h.sponsorWallet.address);
+      h.ethBalances.set(h.sponsorWallet.address, 0n);
+      await assert.rejects(h.engine.requote(h.account, quote.quoteId), /protected reserve/);
+      h.ethBalances.set(h.sponsorWallet.address, balance);
+    }
+    assert.equal(h.sends.length, 0);
+    await h.engine.requote(h.account, quote.quoteId);
+    await assert.rejects(h.engine.requote(h.account, quote.quoteId), /reconcile/);
+    const redemptionWallet = own === '0' ? h.sponsorWallet : h.wallets[h.account];
+    // Keep the elevated estimate for redemption only.
+    await h.engine.advance(h.account, h.jobs[h.account]);
+    assert.equal(h.sends[0].from, redemptionWallet.address);
+    // Restore simulator estimates for the remaining route.
+    const { GAS } = require('../tools/eth/funding-v2');
+    for (const w of [h.wallets[h.account], h.sponsorWallet]) w.estimateGas = async () => {
+      const state = h.jobs[h.account].status;
+      return ['front_gas', 'collect_fee'].includes(state) ? GAS[state] : GAS[state] * 7n / 10n;
+    };
+    await h.run();
+    assert.equal(h.sends.filter(s => s.state === 'wh_redeem').length, 1);
+    assert.equal(h.sends.filter(s => s.state === 'collect_fee').length, 1);
+    assert.equal(A.costs(h.jobs[h.account]).debt, 0n);
+    console.log('✓ existing Wormhole transfer requotes actual gas and resumes once with ' + (own === '0' ? 'sponsored' : 'existing') + ' ETH');
+  }
   {
     const h = await stuck(), before = JSON.stringify(h.jobs[h.account]), sent = h.sends.length;
     const original = quotes.quoteVkoinOut;
