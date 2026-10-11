@@ -17,6 +17,7 @@
     "node": ">=18"
   },
   "dependencies": {
+    "cross-fetch": "^3.2.0",
     "ethers": "^6.17.0",
     "koilib": "^9.0.0"
   },

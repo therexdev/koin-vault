@@ -12,6 +12,8 @@ const { installFailover } = require('../tools/rpc-failover');
     wrappedAmqp: { code: -32603, message: 'Internal error', data: JSON.stringify({ message: 'AMQP connection is not open' }) },
     channel: { code: -32603, message: 'AMQP channel is closed' },
     rejection: { message: 'contract rejected' },
+    rejectionData: { message: 'RPC failure', data: JSON.stringify({ error: 'contract rejected', code: 1, logs: ['transaction reverted'] }) },
+    gatewayData: { message: 'Unable to translate request', data: 'parameters could not be parsed' },
   };
   function reply(res, kind) {
     if (kind === 'timeout') return;
@@ -32,6 +34,32 @@ const { installFailover } = require('../tools/rpc-failover');
     });
     const b = await serve((req, res) => { backup++; reply(res, backupMode); });
     const c = await serve((req, res) => { last++; reply(res, 'ok'); });
+    const jsonOnly = await serve((req, res) => {
+      if (req.headers['content-type'] !== 'application/json') {
+        res.statusCode = 415;
+        res.end(JSON.stringify({ error: { message: 'Unsupported Media Type' } }));
+        return;
+      }
+      let body = '';
+      req.on('data', chunk => { body += chunk; });
+      req.on('end', () => {
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ result: JSON.parse(body) }));
+      });
+    });
+    const jsonProvider = installFailover(new Provider([jsonOnly, b]), { timeoutMs: 100 });
+    const jsonParams = { contract_id: 'token', entry_point: 1550980247, args: 'CgEA' };
+    const beforeJson = backup;
+    const jsonResult = await jsonProvider.call('chain.read_contract', jsonParams);
+    assert.equal(jsonResult.jsonrpc, '2.0');
+    assert.equal(jsonResult.method, 'chain.read_contract');
+    assert.deepEqual(jsonResult.params, jsonParams, 'JSON content type preserves the original RPC request');
+    assert.equal(backup, beforeJson, 'a healthy JSON-only primary must not need a backup');
+    const submitParams = { transaction: { id: 'fixture', operations: [] }, broadcast: false };
+    const submitted = await jsonProvider.call('chain.submit_transaction', submitParams);
+    assert.equal(submitted.method, 'chain.submit_transaction');
+    assert.deepEqual(submitted.params, submitParams, 'JSON transport leaves the submitted transaction unchanged');
+    assert.equal(backup, beforeJson);
     const make = () => installFailover(new Provider([a, b]), { timeoutMs: 100 });
     assert.deepEqual(await make().call('chain.get_account_rc', {}), { value: '42' });
     assert.equal(backup, 1);
@@ -81,6 +109,17 @@ const { installFailover } = require('../tools/rpc-failover');
     mode = 'rejection';
     await assert.rejects(make().call('chain.read_contract', {}), /contract rejected/);
     assert.equal(backup, before, 'do not retry contract rejections');
+    for (const failure of ['rejectionData', 'gatewayData']) {
+      mode = failure;
+      const expected = failure === 'rejectionData'
+        ? { error: 'contract rejected', code: 1, logs: ['transaction reverted'] }
+        : { error: 'Unable to translate request', data: 'parameters could not be parsed' };
+      await assert.rejects(make().call('chain.read_contract', {}), error => {
+        assert.deepEqual(JSON.parse(error.message), expected, 'retain chain errors, receipt logs and gateway details');
+        return true;
+      });
+      assert.equal(backup, before, 'do not retry deterministic chain or request errors');
+    }
     mode = 'html';
     const count = primary;
     await assert.rejects(installFailover(new Provider([a, a])).call('chain.get_head_info', {}));
@@ -95,4 +134,3 @@ const { installFailover } = require('../tools/rpc-failover');
     for (const s of servers) { s.closeAllConnections(); s.close(); }
   }
 })().catch(e => { console.error(e); process.exitCode = 1; });
-
