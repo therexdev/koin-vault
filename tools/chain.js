@@ -200,12 +200,33 @@ async function withRpcRetry(fn, attempts = 3) {
 }
 
 async function sendTolerant(tx) {
-  try { await tx.send(); }
+  let receipt;
+  try { receipt = await tx.send(); }
   catch (e) {
     const msg = humanChainError(e);
-    if (!TRANSIENT_SEND.test(msg)) { const err = new Error(msg); err.cause = e; throw err; }
-    // Ambiguous — the mined-check below is the arbiter.
+    // A node can fail to encode its RPC reply after accepting a transaction.
+    // This can also mean invalid input: resolve ONLY by this exact id's
+    // canonical receipt. Never broadcast again or prepare another transfer.
+    if (!TRANSIENT_SEND.test(msg) && !/^Invalid encoded bytes\b/i.test(msg)) {
+      const err = new Error(msg); err.cause = e; throw err;
+    }
+    return; // Ambiguous — the mined-check below is the arbiter.
   }
+  if (receipt?.reverted) {
+    throw revertedTransaction(tx.transaction.id, receipt);
+  }
+}
+
+function revertedTransaction(txId, receipt) {
+  const logs = Array.isArray(receipt.logs) ? receipt.logs.join(' | ') : '';
+  return Object.assign(new Error(`transaction ${txId} reverted${logs ? ': ' + logs : ''}`),
+    { code: 'TRANSACTION_REVERTED', txId });
+}
+
+function confirmationError(txId, cause) {
+  if (cause.code === 'TRANSACTION_REVERTED') return cause;
+  return Object.assign(new Error(`transaction ${txId} not confirmed: ${humanChainError(cause)}`),
+    { code: 'TRANSACTION_CONFIRMATION_PENDING', txId, broadcast: true, cause });
 }
 
 async function waitMined(txId, timeoutMs = 90000) {
@@ -216,8 +237,25 @@ async function waitMined(txId, timeoutMs = 90000) {
     try {
       const { transactions } = await p.getTransactionsById([txId]);
       const t = transactions && transactions[0];
-      if (t && t.containing_blocks && t.containing_blocks.length) return { blockId: t.containing_blocks[0] };
-    } catch (e) { lastErr = e; }
+      if (t?.containing_blocks?.length) {
+        // Inclusion alone is not proof of success: transactions can revert
+        // in a block, and the store also retains blocks from abandoned forks.
+        const { block_items: items } = await p.getBlocksById(t.containing_blocks);
+        for (const item of items || []) {
+          if (!item.block_id || !t.containing_blocks.includes(item.block_id)) continue;
+          const height = item.block?.header?.height || item.receipt?.height;
+          const receipt = item.receipt?.transaction_receipts?.find(r => r.id === txId);
+          if (!height || !receipt) continue;
+          const canonical = await p.getBlock(Number(height), { returnBlock: false, returnReceipt: false });
+          if (canonical?.block_id !== item.block_id) continue;
+          if (receipt.reverted) throw revertedTransaction(txId, receipt);
+          return { blockId: item.block_id };
+        }
+      }
+    } catch (e) {
+      if (e.code === 'TRANSACTION_REVERTED') throw e;
+      lastErr = e;
+    }
     await new Promise(r => setTimeout(r, 2500));
   }
   const why = lastErr ? ` (last poll error: ${humanChainError(lastErr).slice(0, 120)})` : '';
@@ -310,10 +348,7 @@ async function submitCosigned(signedTx, preparedId, userAddr) {
     await sendTolerant(tx);
     try { await waitMined(clean.id); }
     catch (e) {
-      const err = new Error(`transaction ${clean.id} not confirmed: ${humanChainError(e)}`);
-      err.txId = clean.id;
-      err.broadcast = true;
-      throw err;
+      throw confirmationError(clean.id, e);
     }
     return clean.id;
   });
@@ -443,10 +478,7 @@ async function sendAsAccount(key, ops, { rcLimit = K.rcLimit } = {}) {
     await sendTolerant(send);
     try { await waitMined(tx.transaction.id); }
     catch (e) {
-      const err = new Error(`transaction ${tx.transaction.id} not confirmed: ${humanChainError(e)}`);
-      err.txId = tx.transaction.id;
-      err.broadcast = true;
-      throw err;
+      throw confirmationError(tx.transaction.id, e);
     }
     return tx.transaction.id;
   });
@@ -485,10 +517,7 @@ async function sendAsSponsorFor(key, ops, { rcLimit = K.rcLimit } = {}) {
     await sendTolerant(send);
     try { await waitMined(tx.transaction.id); }
     catch (e) {
-      const err = new Error(`transaction ${tx.transaction.id} not confirmed: ${humanChainError(e)}`);
-      err.txId = tx.transaction.id;
-      err.broadcast = true;
-      throw err;
+      throw confirmationError(tx.transaction.id, e);
     }
     return tx.transaction.id;
   });
@@ -765,15 +794,14 @@ async function submitSelfPaid(signedTx, preparedId, accountAddr, expectedCredent
     if (beforeBroadcast) await beforeBroadcast(clean);
     try { await sendTolerant(tx); }
     catch (e) {
+      if (e.code === 'TRANSACTION_REVERTED') throw e;
       const verdict = pre.ok === true ? 'accepted' : pre.error ? `unreadable: ${pre.error}` : 'no verdict';
       throw new Error(`${explainSigLength(humanChainError(e))} [self-paid; sign module: ${verdict}`
         + `${pre.logs && pre.logs.length ? '; ' + pre.logs.join(' | ') : ''}] (payer ${clean.header.payer})`);
     }
     try { await waitMined(clean.id); }
     catch (e) {
-      const err = new Error(`transaction ${clean.id} not confirmed: ${humanChainError(e)}`);
-      err.txId = clean.id; err.broadcast = true;
-      throw err;
+      throw confirmationError(clean.id, e);
     }
     return clean.id;
   });
@@ -845,6 +873,7 @@ async function submitSmartCosigned(signedTx, preparedId, accountAddr, expectedCr
     if (beforeBroadcast) await beforeBroadcast(clean);
     try { await sendTolerant(tx); }
     catch (e) {
+      if (e.code === 'TRANSACTION_REVERTED') throw e;
       /* The pre-flight said yes (or couldn't tell) and the chain still said
          no — carry the module's own log lines and the shapes it saw, so the
          next report names a cause instead of a symptom. */
@@ -859,10 +888,7 @@ async function submitSmartCosigned(signedTx, preparedId, accountAddr, expectedCr
     }
     try { await waitMined(clean.id); }
     catch (e) {
-      const err = new Error(`transaction ${clean.id} not confirmed: ${humanChainError(e)}`);
-      err.txId = clean.id;
-      err.broadcast = true;
-      throw err;
+      throw confirmationError(clean.id, e);
     }
     return clean.id;
   });

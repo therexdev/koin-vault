@@ -1314,12 +1314,17 @@ async function handleRequest(req, res) {
     if (pathname === '/.well-known/assetlinks.json') return serveAssetLinks(res);
     return serveStatic(req, res, pathname);
   } catch (e) {
-    const status = e.status || 500;
+    const pending = e.code === 'TRANSACTION_CONFIRMATION_PENDING' && e.broadcast === true
+      && /^0x1220[0-9a-f]{64}$/.test(e.txId || '');
+    const status = pending ? 409 : e.status || 500;
     if (status >= 500) console.error(`[${new Date().toISOString()}]`, e.message || e);
     if (res.destroyed || res.writableEnded) return;
     if (res.headersSent) return res.destroy();
     res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-    return res.end(JSON.stringify({ error: String(e.message || e).slice(0, 300) }));
+    return res.end(JSON.stringify(pending ? {
+      error: 'Transaction confirmation is still pending. Check activity before sending again.',
+      code: e.code, txid: e.txId, explorer: explorerTx(e.txId),
+    } : { error: String(e.message || e).slice(0, 300) }));
   }
 }
 const server = http.createServer(handleRequest);

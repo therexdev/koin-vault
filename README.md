@@ -125,6 +125,13 @@ form shows the token contract so tokens sharing a symbol can be distinguished.
 Unpriced tokens have no dollar estimate. Unsupported contracts or unavailable
 metadata cannot be sent, and the server rechecks the balance before preparing.
 
+A timeout or `Invalid encoded bytes` reply during submission leaves the outcome
+uncertain. Vault checks the exact signed transaction ID through the configured
+RPCs, and reports success only after finding its successful receipt on the
+current chain. It never automatically prepares another transfer. If confirmation
+is still unavailable, the form shows a pending notice and explorer link; check
+activity before sending again. A reverted transaction remains an error.
+
 Deploy this change only to KOIN Vault. Added tokens use its own
 `/api/token/prepare` and `/api/token/submit` routes, including in proxy mode;
 the original wallet backend needs no update. Configure `SPONSOR_WIF`,

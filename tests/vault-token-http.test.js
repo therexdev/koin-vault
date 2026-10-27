@@ -11,6 +11,7 @@ const root = path.resolve(__dirname, '..');
 const fixture = label => Signer.fromSeed('vault-http-test-' + label);
 const owner = fixture('owner').getAddress(), recipient = fixture('recipient').getAddress(), token = fixture('token').getAddress();
 const modules = { verifier: fixture('verifier').getAddress(), modSign: fixture('sign').getAddress(), modValidation: fixture('validation').getAddress() };
+const txid = '0x1220' + 'ab'.repeat(32);
 const listen = async server => { server.listen(0, '127.0.0.1'); await once(server, 'listening'); return 'http://127.0.0.1:' + server.address().port; };
 (async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-token-http-'));
@@ -36,9 +37,15 @@ const listen = async server => { server.listen(0, '127.0.0.1'); await once(serve
     chain.tokenMeta = async () => ({ symbol: 'KCT', decimals: 6 });
     chain.tokenBalanceSats = async () => '9007199254740993';
     chain.provider = () => ({ getAccountRc: async () => '2000000000' });
-    chain.prepareUserTx = async (address, operations) => ({ id: 'http-token-tx', header: { payer: chain.sponsorAddress(), payee: address }, operations });
-    chain.verifyPasskeyOnChain = async (_account, signature) => ({ ok: signature === 'verified-passkey' });
-    chain.submitSmartCosigned = async tx => tx.id;
+    chain.prepareUserTx = async (address, operations) => ({ id: ${JSON.stringify(txid)}, header: { payer: chain.sponsorAddress(), payee: address }, operations });
+    chain.verifyPasskeyOnChain = async (_account, signature) => ({ ok: ['verified-passkey', 'pending-passkey', 'rejected-passkey'].includes(signature) });
+    chain.submitSmartCosigned = async tx => {
+      if (tx.signatures[0] === 'pending-passkey') throw Object.assign(new Error('internal confirmation diagnostic'), {
+        code: 'TRANSACTION_CONFIRMATION_PENDING', broadcast: true, txId: tx.id,
+      });
+      if (tx.signatures[0] === 'rejected-passkey') throw new Error('contract rejected');
+      return tx.id;
+    };
   `);
   const child = spawn(process.execPath, ['--require', preload, 'server.js'], {
     cwd: root, env: { PATH: process.env.PATH, PORT: String(port), DATA_DIR: path.join(dir, 'unused-data'),
@@ -70,6 +77,19 @@ const listen = async server => { server.listen(0, '127.0.0.1'); await once(serve
       const body = { ref: prep.ref, transaction: { ...prep.tx, signatures: ['verified-passkey'] } };
       assert.equal((await post(prefix + '/api/token/submit', body)).status, 200);
       assert.equal((await post(prefix + '/api/token/submit', body)).status, 400);
+      const pendingPrep = await (await post(prefix + '/api/token/prepare', request)).json();
+      const pending = await post(prefix + '/api/token/submit', { ref: pendingPrep.ref,
+        transaction: { ...pendingPrep.tx, signatures: ['pending-passkey'] } });
+      assert.equal(pending.status, 409, 'Pending confirmation must not look like confirmed success');
+      assert.deepEqual(await pending.json(), {
+        error: 'Transaction confirmation is still pending. Check activity before sending again.',
+        code: 'TRANSACTION_CONFIRMATION_PENDING', txid, explorer: 'https://koinosblocks.com/tx/' + txid,
+      });
+      const rejectedPrep = await (await post(prefix + '/api/token/prepare', request)).json();
+      const rejected = await post(prefix + '/api/token/submit', { ref: rejectedPrep.ref,
+        transaction: { ...rejectedPrep.tx, signatures: ['rejected-passkey'] } });
+      assert.equal(rejected.status, 500);
+      assert.deepEqual(await rejected.json(), { error: 'contract rejected' }, 'Actual rejections retain their existing error path');
       assert.equal((await post(prefix + '/api/token/prepare', request, 'https://evil.example')).status, 403);
       assert.equal((await fetch(base + prefix + '/api/token/prepare')).status, 405);
     }

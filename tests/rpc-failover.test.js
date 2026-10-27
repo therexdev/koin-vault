@@ -12,6 +12,7 @@ const { installFailover } = require('../tools/rpc-failover');
     wrappedAmqp: { code: -32603, message: 'Internal error', data: JSON.stringify({ message: 'AMQP connection is not open' }) },
     channel: { code: -32603, message: 'AMQP channel is closed' },
     rejection: { message: 'contract rejected' },
+    invalidBytes: { message: 'Invalid encoded bytes' },
     rejectionData: { message: 'RPC failure', data: JSON.stringify({ error: 'contract rejected', code: 1, logs: ['transaction reverted'] }) },
     gatewayData: { message: 'Unable to translate request', data: 'parameters could not be parsed' },
   };
@@ -70,11 +71,27 @@ const { installFailover } = require('../tools/rpc-failover');
     // payload. A broken node's broker must not leave a balance unavailable.
     for (const failure of ['amqp', 'wrappedAmqp', 'channel']) {
       mode = failure;
-      for (const method of ['chain.read_contract', 'chain.get_account_rc', 'chain.get_head_info', 'account_history.get_account_history']) {
+      for (const method of ['chain.read_contract', 'chain.get_account_rc', 'chain.get_head_info', 'account_history.get_account_history', 'transaction_store.get_transactions_by_id']) {
         const before = backup;
         assert.deepEqual(await make().call(method, {}), { value: '42' }, `${failure}: ${method}`);
         assert.equal(backup - before, 1, 'read retries the backup exactly once');
       }
+    }
+
+    // Confirmation polling is a read too: an unavailable transaction store
+    // must fall through immediately, without replaying the submission.
+    for (const failure of ['timeout', 'html']) {
+      mode = failure;
+      const before = [primary, backup];
+      assert.deepEqual(await make().getTransactionsById(['fixture']), { value: '42' });
+      assert.deepEqual([primary - before[0], backup - before[1]], [1, 1], `confirmation read recovers after ${failure}`);
+    }
+
+    mode = 'invalidBytes';
+    for (const method of ['chain.submit_transaction', 'transaction_store.get_transactions_by_id']) {
+      const before = [primary, backup];
+      await assert.rejects(make().call(method, {}), /Invalid encoded bytes/);
+      assert.deepEqual([primary - before[0], backup - before[1]], [1, 0], `${method} preserves deterministic rejection`);
     }
 
     mode = 'amqp';

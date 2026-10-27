@@ -171,7 +171,7 @@ chain.configure({
       tx.signatures = [b64(Buffer.concat([Buffer.from([255, 2]), auth]))];
       return tx;
     }
-    let available = 9999999999n, sends = 0;
+    let available = 9999999999n, sends = 0, sentId;
     const calls = serve(body => {
       if (body.method === 'chain.read_contract') {
         if (body.params.contract_id === MODSIGN) return { error: { message: 'compute bandwidth limit exceeded' } };
@@ -180,6 +180,7 @@ chain.configure({
       if (body.method === 'chain.get_account_rc') return { result: { rc: available.toString() } };
       if (body.method === 'chain.submit_transaction') {
         sends++;
+        sentId = body.params.transaction.id;
         assert.strictEqual(body.params.transaction.header.rc_limit, limit);
         available -= 2500000000n;
         return { result: { receipt: { id: body.params.transaction.id, reverted: false } } };
@@ -187,6 +188,12 @@ chain.configure({
       if (body.method === 'transaction_store.get_transactions_by_id') {
         return { result: { transactions: [{ containing_blocks: ['fixture-block'] }] } };
       }
+      if (body.method === 'block_store.get_blocks_by_id') return { result: { block_items: [{
+        block_id: 'fixture-block', block: { header: { height: '10' } },
+        receipt: { transaction_receipts: [{ id: sentId, reverted: false }] },
+      }] } };
+      if (body.method === 'chain.get_head_info') return { result: { head_topology: { id: 'fixture-head' } } };
+      if (body.method === 'block_store.get_blocks_by_height') return { result: { block_items: [{ block_id: 'fixture-block' }] } };
       throw new Error('unexpected test RPC: ' + body.method);
     });
     for (const selfPaid of [false, true]) {
@@ -211,6 +218,96 @@ chain.configure({
     assert.strictEqual(outcomes.find(r => r.status === 'rejected').reason.code, 'INSUFFICIENT_PAYER_MANA');
     assert.strictEqual(sends, 2, 'the second queued send must see mana consumed by the first');
     console.log('✓ funding mana: signed ceiling, actual payer, read-only compute errors and queued capacity recheck');
+
+    // Exercise the real submit methods through the RPC seam. Accelerate only
+    // the confirmation poll delay; transport deadlines and signing stay real.
+    async function withExpiredPoll(fn) {
+      const realNow = Date.now, realSetTimeout = global.setTimeout;
+      let elapsed = 0;
+      Date.now = () => realNow() + elapsed;
+      global.setTimeout = (callback, delay, ...args) => {
+        if (delay === 2500) { elapsed += 90000; return realSetTimeout(callback, 0, ...args); }
+        return realSetTimeout(callback, delay, ...args);
+      };
+      try { return await fn(); }
+      finally { Date.now = realNow; global.setTimeout = realSetTimeout; }
+    }
+    function submissionScenario(kind) {
+      let submitted;
+      const rpcCalls = serve(body => {
+        if (body.method === 'chain.read_contract') {
+          return body.params.contract_id === MODSIGN
+            ? { error: { message: 'compute bandwidth limit exceeded' } }
+            : { result: { result: 'CAE=' } };
+        }
+        if (body.method === 'chain.submit_transaction') {
+          submitted = structuredClone(body.params.transaction);
+          if (kind === 'deterministic') return { error: { message: 'contract rejected transfer' } };
+          if (kind === 'immediate-revert') return { result: { receipt: {
+            id: submitted.id, reverted: true, logs: ['token transfer failed'],
+          } } };
+          return { error: { message: 'Invalid encoded bytes' } };
+        }
+        if (body.method === 'transaction_store.get_transactions_by_id') {
+          assert.deepStrictEqual(body.params.transaction_ids, [submitted.id], 'poll only the exact submitted transaction');
+          return { result: { transactions: [{ containing_blocks: kind === 'pending' ? [] : ['fixture-block'] }] } };
+        }
+        if (body.method === 'block_store.get_blocks_by_id') {
+          assert.deepStrictEqual(body.params.block_ids, ['fixture-block']);
+          return { result: { block_items: [{
+            ...(kind === 'missing-block-id' ? {} : { block_id: 'fixture-block' }),
+            block: { header: { height: '10' } }, receipt: { transaction_receipts: [{
+              id: kind === 'wrong-receipt' ? TXID : submitted.id,
+              reverted: kind === 'canonical-revert', logs: kind === 'canonical-revert' ? ['token transfer failed'] : [],
+            }] },
+          }] } };
+        }
+        if (body.method === 'chain.get_head_info') return { result: { head_topology: { id: 'fixture-head' } } };
+        if (body.method === 'block_store.get_blocks_by_height') return { result: { block_items: [{
+          ...(kind === 'missing-block-id' ? {} : { block_id: kind === 'abandoned-fork' ? 'different-block' : 'fixture-block' }),
+        }] } };
+        throw new Error('unexpected confirmation RPC: ' + body.method);
+      });
+      return { rpcCalls, submitted: () => submitted };
+    }
+    for (const selfPaid of [false, true]) {
+      const submit = selfPaid ? chain.submitSelfPaid : chain.submitSmartCosigned;
+      const tx = await signedFixture(selfPaid);
+      const send = () => submit(tx, tx.id, ACCOUNT, ['fund-mana-credential']);
+      for (const kind of ['success', 'canonical-revert', 'immediate-revert', 'wrong-receipt', 'abandoned-fork', 'missing-block-id', 'pending', 'deterministic']) {
+        const scenario = submissionScenario(kind);
+        if (kind === 'success') {
+          assert.strictEqual(await send(), tx.id, 'an ambiguous encoding error resolves only from its canonical successful receipt');
+        } else if (kind === 'canonical-revert' || kind === 'immediate-revert') {
+          await assert.rejects(send(), error => {
+            assert.strictEqual(error.code, 'TRANSACTION_REVERTED');
+            assert.strictEqual(error.txId, tx.id);
+            assert.match(error.message, /token transfer failed/);
+            return true;
+          });
+        } else if (kind === 'deterministic') {
+          await assert.rejects(send(), /contract rejected transfer/);
+        } else {
+          await withExpiredPoll(() => assert.rejects(send(), error => {
+            assert.strictEqual(error.code, 'TRANSACTION_CONFIRMATION_PENDING', `${kind}: pending is not a send failure`);
+            assert.strictEqual(error.txId, tx.id);
+            assert.strictEqual(error.broadcast, true);
+            return true;
+          }));
+        }
+        assert.strictEqual(scenario.rpcCalls.filter(call => call.method === 'chain.submit_transaction').length, 1,
+          `${kind}: never broadcast a replacement transaction`);
+        assert.deepStrictEqual(scenario.submitted().header, tx.header);
+        assert.deepStrictEqual(scenario.submitted().operations, tx.operations);
+        assert.strictEqual(scenario.submitted().signatures.length, selfPaid ? 1 : 2);
+        assert.strictEqual(scenario.submitted().signatures.at(-1), tx.signatures[0], 'retain the exact passkey signature');
+        if (kind === 'deterministic' || kind === 'immediate-revert') {
+          assert.strictEqual(scenario.rpcCalls.filter(call => call.method === 'transaction_store.get_transactions_by_id').length, 0,
+            'a definitive rejection or returned revert does not become a pending confirmation');
+        }
+      }
+    }
+    console.log('✓ smart and self-paid sends: encoding-error reconciliation, exact canonical receipts, reverts, forks, pending metadata and single broadcast');
   }
 
   HOOK = null;

@@ -8,7 +8,7 @@ const BROKER_UNAVAILABLE = /\bamqp\s+(?:connection|channel)\s+(?:is\s+)?(?:not o
 
 // Only known read methods may be retried. A submission can succeed even
 // when its response is lost, so writes must retain their single attempt.
-const READ = /^(chain\.(get_|read_contract$)|block_store\.get_|account_history\.get_)/;
+const READ = /^(chain\.(get_|read_contract$)|block_store\.get_|transaction_store\.get_|account_history\.get_)/;
 
 async function callNode(url, method, params, signal) {
   // koilib's default transport labels its JSON body as text/plain. Strict

@@ -68,7 +68,7 @@ vm.runInContext(app.slice(app.indexOf("  $('#btn-send').addEventListener"), app.
   row.decimals = -1; assert.equal(ctx.canSendAsset(token), false); row.decimals = 6;
   ctx.CTX.cfg.demo = true; assert.equal(ctx.canSendAsset(token), false); ctx.CTX.cfg.demo = false;
 
-  let prepareCount = 0, signed = 0, submitted = 0, change = value => value, signError, release;
+  let prepareCount = 0, signed = 0, submitted = 0, change = value => value, signError, submitError, release;
   let liveConfig = { demo: false, sendCustomTokens: true, network: 'mainnet' };
   ctx.api = async (url, body) => {
     if (url === '/api/config') return liveConfig;
@@ -78,7 +78,9 @@ vm.runInContext(app.slice(app.indexOf("  $('#btn-send').addEventListener"), app.
         tx: { id: 'tx', header: { payee: ctx.ADDRESS }, operations: [{ call_contract: { contract_id: token, entry_point: 0x27f576ca, args: 'fixture' } }] } });
     }
     assert.equal(url, '/api/token/submit');
-    submitted++; assert.equal(body.transaction.signatures[0], 'passkey-blob'); return { txid: 'tx' };
+    submitted++; assert.equal(body.transaction.signatures[0], 'passkey-blob');
+    if (submitError) throw submitError;
+    return { txid: 'tx' };
   };
   ctx.signPrepared = async () => { signed++; if (signError) throw signError; if (release) await release.promise; return 'passkey-blob'; };
   const click = handlers.get('btn-send:click');
@@ -118,6 +120,21 @@ vm.runInContext(app.slice(app.indexOf("  $('#btn-send').addEventListener"), app.
   row.symbol = '<img src=x onerror=alert(1)>'; await click();
   assert.equal(node('send-status').textContent, 'Sent ' + row.symbol + ' ✓');
   assert.equal(node('send-status').innerHTML, '', 'Contract-controlled symbols never enter innerHTML');
+  node('send-to').value = 'recipient'; node('send-amount').value = '1.234567';
+  submitError = Object.assign(new Error('internal diagnostic'), { code: 'TRANSACTION_CONFIRMATION_PENDING',
+    txid: '0x1220' + 'ab'.repeat(32), explorer: 'https://koinosblocks.com/tx/0x1220' + 'ab'.repeat(32) });
+  await click();
+  assert.equal(node('send-status').textContent, 'Confirmation is still pending. Check activity before sending again.');
+  assert.equal(node('send-status').className, 'status', 'An uncertain outcome is neither success nor failure');
+  assert.equal(node('send-status').children.at(-1).href, submitError.explorer);
+  assert.equal(node('send-to').value, ''); assert.equal(node('send-amount').value, '', 'Do not leave a one-click duplicate transfer ready');
+  const beforePendingRetry = prepareCount;
+  await click(); assert.equal(prepareCount, beforePendingRetry, 'Clicking Send again cannot immediately duplicate a pending transfer');
+  node('send-to').value = 'recipient'; node('send-amount').value = '1.234567';
+  submitError = new Error('contract rejected'); await click();
+  assert.equal(node('send-status').textContent, 'contract rejected');
+  assert.equal(node('send-status').className, 'status err');
+  assert.equal(node('send-amount').value, '1.234567', 'Definitive rejections keep the reviewable form');
   console.log('✓ Custom token selection, duplicate symbols, contract display, exact Send all and honest unpriced amounts');
   console.log('✓ Precision checks, prepared-token mismatch rejection, passkey submission, cancellation and safe status text');
 })().catch(e => { console.error(e); process.exitCode = 1; });

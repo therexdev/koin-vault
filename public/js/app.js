@@ -55,7 +55,11 @@
     if (lookup) request.signal = AbortSignal.timeout(15000);
     const r = await fetch(WalletClient.apiPath(path), request);
     const data = await r.json().catch(error => { if (lookup) throw error; return {}; });
-    if (!r.ok) { const e = new Error(data.error || 'request failed'); e.status = r.status; e.code = data.code; throw e; }
+    if (!r.ok) {
+      const e = new Error(data.error || 'request failed');
+      e.status = r.status; e.code = data.code; e.txid = data.txid; e.explorer = data.explorer;
+      throw e;
+    }
     return data;
   }
 
@@ -800,6 +804,12 @@
     const amount = $('#send-amount').value.trim();
     // Token symbols and contract errors are untrusted text, never markup.
     const say = (msg, cls) => { st.hidden = false; st.className = 'status' + (cls ? ' ' + cls : ''); st.textContent = msg; };
+    const showExplorer = explorer => {
+      if (typeof explorer !== 'string' || !explorer.startsWith('https://')) return;
+      const link = document.createElement('a');
+      link.href = explorer; link.target = '_blank'; link.rel = 'noopener'; link.textContent = ' — view it on-chain ↗';
+      st.appendChild(link);
+    };
     if (!UI.canSendAsset(asset)) { say('Refresh the wallet to check whether this asset can be sent.', 'err'); return; }
     if (!to) { say('Paste a destination address', 'err'); return; }
     let units;
@@ -833,16 +843,21 @@
       say('Broadcasting — the chain verifies the signature on-chain…');
       const r = await api(custom ? '/api/token/submit' : '/api/submit', { ref: prep.ref, transaction: { ...prep.tx, signatures: [blob] } });
       say(`Sent ${symbol} ✓` + (r.demo ? ` (demo transaction ${r.txid.slice(0, 14)}…)` : ''), 'ok');
-      if (typeof r.explorer === 'string' && r.explorer.startsWith('https://')) {
-        const link = document.createElement('a');
-        link.href = r.explorer; link.target = '_blank'; link.rel = 'noopener'; link.textContent = ' — view it on-chain ↗';
-        st.appendChild(link);
-      }
+      showExplorer(r.explorer);
       $('#send-to').value = ''; $('#send-amount').value = '';
       void transactionFeed?.refresh();
       paint();
     } catch (e) {
-      say(e.name === 'NotAllowedError' ? 'Passkey prompt closed — nothing was sent' : (e.message || 'Send failed'), 'err');
+      if (e.code === 'TRANSACTION_CONFIRMATION_PENDING') {
+        say('Confirmation is still pending. Check activity before sending again.');
+        showExplorer(e.explorer);
+        // A new preparation would use a fresh nonce and could send twice.
+        $('#send-to').value = ''; $('#send-amount').value = '';
+        void transactionFeed?.refresh();
+        paint();
+      } else {
+        say(e.name === 'NotAllowedError' ? 'Passkey prompt closed — nothing was sent' : (e.message || 'Send failed'), 'err');
+      }
     } finally {
       SENDING = false;
       UI.setSendBusy(false);
