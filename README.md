@@ -195,7 +195,7 @@ is reported separately from a sponsor that needs to regenerate mana.
 USDC and USDT deposits ride Route C's tail (USDC adds one hop through the
 deepest stable pair on Ethereum). The server quotes every route live, shows
 the comparison, and executes the winner. Amounts are capped while the rails
-are new (`FUND_MAX_ETH` 0.1, `FUND_MAX_STABLE` $150, `FUND_MAX_SOL` 1).
+are new (`FUND_MAX_ETH` 0.2, `FUND_MAX_STABLE` $150, `FUND_MAX_SOL` 1).
 
 **Why SOL goes through Ethereum.** The vKOIN that trades on Solana (mint
 `8AUxdPqYU4FBy5rZDhMJxTniPs7gtEfdHjP3UKM71m6G`, the Raydium KOIN/SOL pair) is
@@ -612,7 +612,7 @@ node server.js
 | `ETH_RPC` | *(public list)* | Ethereum RPC endpoint(s), comma-separated by priority |
 | `ETH_GAS_SPONSOR_KEY` | — | Ethereum key that fronts gas for stablecoin-only and SOL deposits (optional) |
 | `ETH_GAS_TOPUP` | `0.0015` | legacy setting; new jobs calculate the bootstrap shortfall |
-| `FUND_MAX_ETH` | `0.1` | per-swap ETH cap on the funding rail |
+| `FUND_MAX_ETH` | `0.2` | per-swap ETH cap on the funding rail; also caps the ETH value of KOIN sales. Existing hosting overrides take precedence; update them and restart to change the limit. |
 | `FUND_MAX_STABLE` | `150` | per-swap USDC/USDT cap (USD) |
 | `FUND_SLIPPAGE_BPS` | `150` | slippage floor for every funding swap (1.5%) |
 | `SOLANA_RPC` | *(public list)* | Solana RPC endpoint(s), comma-separated by priority — the public one is rate-limited, set your own |
