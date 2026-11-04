@@ -4,6 +4,27 @@ New conversions repay their funding address in native ETH before the remaining
 Ethereum conversion and Vortex deposit. They do not accumulate small token fees
 and wait for a future sweep. Existing user ETH is used before lending gas.
 
+## Review an updated fee
+
+If gas rises after vKOIN has been bought, **Review updated fee** is available
+at both Vortex approval (`approve_bridge`) and transfer (`bridge_token`).
+The dialog shows estimated remaining gas, the maximum remaining gas (including
+one signature-renewal reserve), and old/new total fee limits including costs
+already paid. **Approve fee and continue** resumes the same conversion.
+**Cancel** leaves its limits unchanged. If ETH is short, the dialog gives the
+exact additional amount and existing deposit address; use **Refresh fee** after
+funding it. Quotes expire, and approval always checks the live balance again.
+
+Recovery retains the actual vKOIN amount, completed receipts and settled fees.
+It does not repeat a swap, collect another platform fee, or increase limits
+without approval. The blocked step is estimated again. Pending/unreconciled
+transactions, a recorded successful Vortex deposit, missing vKOIN, outstanding
+sponsor debt, changed jobs and stale or duplicate approvals are rejected.
+Existing stablecoin and Wormhole recovery uses the same review dialog.
+
+Deploy backend and frontend together, then reload the browser/PWA. Existing
+eligible jobs gain the button without a data migration or ledger reset.
+
 ## Route behavior
 
 | Deposit | When the user has enough ETH | When the user lacks ETH |

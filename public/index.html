@@ -267,7 +267,7 @@
             <div class="btn-row">
               <button class="cta small lock" id="btn-fund-land" type="button" hidden>Land my KOIN — confirm with passkey</button>
               <button class="ghost" id="btn-fund-retry" type="button" hidden>Retry</button>
-              <button class="primary" id="btn-fund-requote" type="button" hidden>Review updated quote</button>
+              <button class="primary" id="btn-fund-requote" type="button" hidden>Review updated fee</button>
               <button class="ghost" id="btn-fund-reset" type="button" hidden>New swap</button>
             </div>
           </div>
@@ -275,6 +275,17 @@
       </div>
       <div class="status" id="fund-status" role="status" aria-live="polite" hidden></div>
       <p class="hint center">Quotes are live; the best route is marked.</p>
+      <dialog id="fund-fee-dialog" class="eth-dialog" aria-labelledby="fund-fee-title">
+        <h3 id="fund-fee-title">Review updated fee</h3>
+        <div class="status eth-review" id="fund-fee-details"></div>
+        <p class="hint" id="fund-fee-note"></p>
+        <p class="hint eth-address" id="fund-fee-message" role="status" aria-live="polite"></p>
+        <button class="cta wide" id="btn-fund-fee-approve" type="button">Approve fee and continue</button>
+        <div class="btn-row two">
+          <button class="ghost" id="btn-fund-fee-cancel" type="button">Cancel</button>
+          <button class="ghost" id="btn-fund-fee-refresh" type="button">Refresh fee</button>
+        </div>
+      </dialog>
       <dialog id="eth-withdraw-dialog" class="eth-dialog" aria-labelledby="eth-withdraw-title">
         <button class="ghost" id="btn-eth-close" type="button" aria-label="Close withdrawal">Close</button>
         <h3 id="eth-withdraw-title">Withdraw Ethereum</h3>

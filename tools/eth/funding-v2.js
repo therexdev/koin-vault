@@ -42,13 +42,20 @@ const eth = (n) => ethers.formatEther(n);
 const units = (asset, n) => ethers.formatUnits(n, asset === "eth" ? 18 : asset === "sol" ? 9 : 6);
 const positive = (n, why) => { if (n <= 0n) throw new Error(why); return n; };
 
+function isVortexRecovery(j) {
+  return !!(j && ['C', 'D', 'S', 'T'].includes(j.route)
+    && ['approve_bridge', 'bridge_token'].includes(j.failedAt)
+    && j.feePlan?.tail?.includes(j.failedAt) && BigInt(j.vkoinSats || 0) > 0n
+    && !Object.values(j.ethReceipts || {}).some(r => r.success && r.state === 'bridge_token'));
+}
+
 function canRequote(j) {
   const bridgeRecovery = j?.asset === 'sol' && j.failedAt === 'wh_redeem'
     && ['T', 'S'].includes(j.route) && j.vaa && j.vaaEvmHash && BigInt(j.vaaAmount || 0) > 0n
     && !j.settlementComplete;
   return !!(j?.feePlan?.version === 2 && j.status === "error" && (j.settlementComplete || bridgeRecovery)
     && !j.pendingEth && !j.confirmedEth && !j.pendingTx && !j.ethTxHash
-    && (bridgeRecovery || (["approve_permit2_reset", "approve_permit2", "approve_ur", "swap_usdt_vkoin"].includes(j.failedAt)
+    && (bridgeRecovery || isVortexRecovery(j) || (["approve_permit2_reset", "approve_permit2", "approve_ur", "swap_usdt_vkoin"].includes(j.failedAt)
     && BigInt(j.usdtSats || 0) > 0n)) && A.costs(j).debt === 0n);
 }
 
@@ -325,6 +332,10 @@ function create(ctx) {
           if (await wormhole.isRedeemedOnEthereum(p, j.vaaEvmHash)) throw new Error('The bridge transfer was already redeemed. Use Retry to reconcile it.');
           if (q.plan.sponsoredRedeem && (await sponsorFor()).address.toLowerCase() !== String(q.plan.sponsorAddress).toLowerCase()) throw new Error('The original gas sponsor must remain configured until this job is settled');
           await capacity(BigInt(q.plan.sponsorMaxWei), { price: BigInt(q.plan.ethUsdUnits) }, j.id);
+        } else if (q.vortexRecovery) {
+          if (BigInt(await swap.balanceOf(p, RC.VKOIN, j.ethFrom)) < BigInt(j.vkoinSats)) {
+            throw new Error("The vKOIN balance changed; the conversion needs reconciliation.");
+          }
         } else if (BigInt(await swap.balanceOf(p, stableTokenOf(j), j.ethFrom)) < BigInt(j.usdtSats)) throw new Error("The USDT balance changed; the conversion needs reconciliation.");
         const updated = save(account, { ...j, feePlan: q.plan, estKoinOut: q.plan.koinOut,
           estFeeEth: eth(q.plan.estimatedFeeWei), status: j.failedAt, failedAt: null,
@@ -334,6 +345,44 @@ function create(ctx) {
         return { job: updated };
       }
       const m = await market();
+      if (isVortexRecovery(j)) {
+        // The swap is already complete. Reprice only the unsent bridge steps;
+        // never quote the spent stablecoins or repeat settlement/the swap.
+        const amount = BigInt(j.vkoinSats);
+        if (BigInt(await swap.balanceOf(p, RC.VKOIN, j.ethFrom)) < amount) {
+          throw new Error("The vKOIN balance changed; the conversion needs reconciliation.");
+        }
+        const remaining = j.failedAt === 'approve_bridge'
+          ? ['approve_bridge', 'bridge_token', 'request_signatures']
+          : ['bridge_token', 'request_signatures'];
+        const cost = stepCosts(remaining, m);
+        const tx = j.failedAt === 'approve_bridge'
+          ? swap.buildApproveTx(RC.VKOIN, BC.BRIDGE[S.network].ethBridge, amount)
+          : buildTransferTokensTx({ token: RC.VKOIN, amountSats: amount,
+            koinosRecipient: account, relayer: ctx.relayer(), network: S.network });
+        const estimate = positive(BigInt(await (await walletFor(account)).estimateGas(tx)), 'Bridge gas could not be estimated');
+        cost.gasLimits[j.failedAt] = estimate + A.bps(estimate, cfg().gasHeadroomBps);
+        cost.maxGasWei = sum(Object.values(cost.gasLimits)) * m.ceiling;
+        // Signature renewal is a contingency, included only in the maximum.
+        cost.estimatedGasWei = (estimate + (j.failedAt === 'approve_bridge' ? GAS.bridge_token : 0n)) * m.expected;
+        const paidGas = sum(Object.values(j.ethReceipts || {}).map(r => r.gasWei));
+        const paidFee = BigInt(j.feePlan.serviceWei) + A.bps(A.costs(j).sponsor, j.feePlan.riskBps);
+        const plan = A.serialize({ ...j.feePlan, maxFeePerGas: m.ceiling, priorityFeePerGas: m.priority,
+          gasLimits: { ...j.feePlan.gasLimits, ...cost.gasLimits }, gasMaxWei: paidGas + cost.maxGasWei,
+          estimatedFeeWei: paidGas + paidFee + cost.estimatedGasWei,
+          maxFeeWei: paidGas + paidFee + cost.maxGasWei, ownEthMaxWei: paidGas + paidFee + cost.maxGasWei,
+          koinOut: amount, koinOutMin: amount });
+        const id = crypto.randomUUID(), expiresAt = Date.now() + cfg().quoteSeconds * 1000;
+        for (const [key, q] of recoveryQuotes) if (q.expiresAt <= Date.now() || q.account === account) recoveryQuotes.delete(key);
+        if (recoveryQuotes.size >= 2000) recoveryQuotes.delete(recoveryQuotes.keys().next().value);
+        recoveryQuotes.set(id, { account, snapshot, expiresAt, plan, remainingGasWei: cost.maxGasWei, vortexRecovery: true });
+        const available = BigInt(await p.getBalance(j.ethFrom, 'latest'));
+        return { quote: { quoteId: id, expiresAt, vortexRecovery: true,
+          vkoin: ethers.formatUnits(amount, 8), koinOut: plan.koinOut, koinOutMin: plan.koinOutMin,
+          estimatedRemainingGasEth: eth(cost.estimatedGasWei), remainingGasMaxEth: eth(cost.maxGasWei),
+          totalMaxFeeEth: eth(plan.maxFeeWei), previousMaxFeeEth: eth(j.feePlan.maxFeeWei),
+          additionalEthNeeded: eth(A.shortfall(cost.maxGasWei, available)) } };
+      }
       if (j.failedAt === 'wh_redeem') {
         if (await wormhole.isRedeemedOnEthereum(p, j.vaaEvmHash)) throw new Error('The bridge transfer was already redeemed. Use Retry to reconcile it.');
         const available = BigInt(await p.getBalance(j.ethFrom, 'latest'));

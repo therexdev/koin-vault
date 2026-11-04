@@ -111,7 +111,7 @@ function harness({ own = "0", sponsor = "1", policy = {}, service = "1" } = {}) 
   };
   for (const w of [...Object.values(wallets), sponsorWallet]) w.estimateGas = async () => {
     const j = Object.values(jobs).find((j) => !j.pendingEth && !j.confirmedEth && (j.ethFrom === w.address || w.address === sponsorWallet.address));
-    return estimate(j.status);
+    return estimate(j.status === 'error' ? j.failedAt : j.status);
   };
   swap.balanceOf = async (_p, token, owner) => getToken(owner, token);
   swap.allowance = async (_p, token, owner, spender) => allowances.get(allowanceKey(owner, token, spender)) || 0n;

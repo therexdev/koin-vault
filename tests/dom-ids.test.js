@@ -37,6 +37,8 @@ const IDS = {
     'btn-dapp-block', 'dapp-blocked', 'dapp-blocked-list',
   ],
   'fund.js': [
+    'btn-fund-requote', 'fund-fee-dialog', 'fund-fee-title', 'fund-fee-details', 'fund-fee-note', 'fund-fee-message',
+    'btn-fund-fee-approve', 'btn-fund-fee-cancel', 'btn-fund-fee-refresh',
     'btn-fund-enable', 'fund-eth-addr', 'btn-fund-land', 'btn-fund-retry', 'btn-fund-reset', 'fund-assets',
     'fund-setup', 'fund-body', 'fund-balances', 'fund-idle', 'fund-empty', 'fund-job', 'fund-spin',
     'fund-job-label', 'fund-job-sub', 'fund-status', 'stat-eth', 'stat-stable', 'stat-bridge',

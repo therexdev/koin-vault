@@ -18,6 +18,7 @@ const Fund = (() => {
   let LAST_JOB_STATUS = null; // to notice a job finishing while another tab is up
   let SELECTED = null;
   let SESSION = 0;           // account changes invalidate quotes and approvals
+  let RECOVERY = null, RECOVERY_REQUEST = 0, RECOVERY_SUBMITTING = false;
   const DRAFTS = {};
   const QUOTE_REQUEST = {};
   const DEBOUNCE = {};
@@ -108,6 +109,10 @@ const Fund = (() => {
     $('#btn-fund-land').addEventListener('click', land);
     $('#btn-fund-retry').addEventListener('click', () => act('/api/fund/resume'));
     opt('#btn-fund-requote', n => n.addEventListener('click', reviewRecovery));
+    opt('#btn-fund-fee-cancel', n => n.addEventListener('click', closeRecovery));
+    opt('#btn-fund-fee-refresh', n => n.addEventListener('click', reviewRecovery));
+    opt('#btn-fund-fee-approve', n => n.addEventListener('click', approveRecovery));
+    opt('#fund-fee-dialog', n => n.addEventListener('close', () => { RECOVERY = null; RECOVERY_REQUEST++; }));
     $('#btn-fund-reset').addEventListener('click', () => act('/api/fund/reset'));
     opt('#btn-fund-dismiss', n => n.addEventListener('click', () => {
       if (typeof Trade !== 'undefined' && Trade.dismissNotice('buy', LAST?.job)) {
@@ -146,6 +151,7 @@ const Fund = (() => {
     if (typeof Trade !== 'undefined') Trade.forget();
     stop(); LAST = null; LAST_JOB_STATUS = null; QR_SHOWN = null; QR_SHOWN_SOL = null;
     SESSION++; SELECTED = null;
+    closeRecovery();
     for (const asset of Object.keys(DEBOUNCE)) { clearTimeout(DEBOUNCE[asset]); delete DEBOUNCE[asset]; }
     for (const asset of Object.keys(DRAFTS)) delete DRAFTS[asset];
     for (const asset of Object.keys(QUOTE_REQUEST)) delete QUOTE_REQUEST[asset];
@@ -199,26 +205,77 @@ const Fund = (() => {
     setTimeout(() => { el.style.borderColor = ''; }, 900);
   }
 
+  function closeRecovery() {
+    RECOVERY = null; RECOVERY_REQUEST++;
+    opt('#fund-fee-dialog', n => { if (n.open) n.close(); });
+  }
+
   async function reviewRecovery() {
+    if (RECOVERY_SUBMITTING) return;
+    const session = SESSION, credentialId = CTX.credentialId(), jobId = LAST?.job?.id;
+    if (!credentialId || !jobId) return;
+    const request = ++RECOVERY_REQUEST;
+    RECOVERY = null;
     const button = $('#btn-fund-requote');
     button.disabled = true;
+    $('#btn-fund-fee-approve').disabled = true;
+    $('#btn-fund-fee-refresh').disabled = true;
     try {
-      say('Getting an updated quote…');
-      const { quote: q } = await CTX.api('/api/fund/requote', { credentialId: CTX.credentialId() });
-      if (Number(q.additionalEthNeeded) > 0) {
-        say(`The remaining steps need up to ${q.remainingGasMaxEth} ETH for gas. Add ${q.additionalEthNeeded} ETH to your existing ETH deposit address, then review again. Your tokens and completed steps stay in this conversion.`, 'err');
-        return;
-      }
+      say('Getting an updated fee…');
+      $('#fund-fee-message').textContent = 'Getting an updated fee…';
+      const { quote: q } = await CTX.api('/api/fund/requote', { credentialId });
+      if (request !== RECOVERY_REQUEST || session !== SESSION || credentialId !== CTX.credentialId() || jobId !== LAST?.job?.id) return;
       const amount = v => (Number(v) / 1e8).toLocaleString(undefined, { maximumFractionDigits: 8 });
-      const ok = q.bridgeRecovery
-        ? window.confirm(`Resume your existing Wormhole transfer?\n\nEstimated KOIN: ${amount(q.koinOut)}\nNew minimum KOIN: ${amount(q.koinOutMin)}\nMaximum remaining gas: ${q.remainingGasMaxEth} ETH\nTotal fee ceiling: ${q.totalMaxFeeEth} ETH (previous: ${q.previousMaxFeeEth})\n\n${q.sponsoredRedeem ? 'The fund pays redemption gas and recovers it from the bridged ETH.' : 'Your existing ETH pays redemption gas.'} Remaining route costs are included in the updated quote. Your original SOL transfer stays recorded. Approve and continue?`)
-        : window.confirm(`Continue this conversion with updated terms?\n\n${(q.stableAsset || "usdt").toUpperCase()} to convert: ${q.usdt}\nEstimated KOIN: ${amount(q.koinOut)}\nNew minimum KOIN: ${amount(q.koinOutMin)} (previous: ${amount(q.previousKoinOutMin)})\nMaximum remaining gas: ${q.remainingGasMaxEth} ETH\nTotal fee ceiling including recorded costs: ${q.totalMaxFeeEth} ETH (previous: ${q.previousMaxFeeEth})\n\nCompleted steps stay recorded. No new platform fee. Gas is paid from your existing ETH balance. Approve and continue?`);
-      if (!ok) { say('Quote not approved. Your existing limits are unchanged.'); return; }
-      await CTX.api('/api/fund/requote', { credentialId: CTX.credentialId(), quoteId: q.quoteId });
-      say('Updated quote approved. Continuing your conversion.');
+      const output = q.vortexRecovery ? `${amount(q.koinOut)} vKOIN ready to bridge to KOIN.`
+        : `Estimated KOIN: ${amount(q.koinOut)}\nNew minimum KOIN: ${amount(q.koinOutMin)}`
+          + (q.previousKoinOutMin != null ? `\nPrevious minimum KOIN: ${amount(q.previousKoinOutMin)}` : '');
+      $('#fund-fee-details').textContent = output
+        + (q.estimatedRemainingGasEth != null ? `\n\nEstimated remaining gas fee: ${q.estimatedRemainingGasEth} ETH` : '')
+        + `\nMaximum remaining gas fee: ${q.remainingGasMaxEth} ETH`
+        + `\n\nTotal fee limit, including costs already paid: ${q.totalMaxFeeEth} ETH\nPrevious total limit: ${q.previousMaxFeeEth} ETH`;
+      $('#fund-fee-note').textContent = q.bridgeRecovery
+        ? `${q.sponsoredRedeem ? 'The fund pays redemption gas and recovers it from the bridged ETH.' : 'Your existing ETH pays redemption gas.'} Your original SOL transfer stays recorded. Remaining route costs are included.`
+        : 'No new platform fee. Completed steps stay recorded. Gas is paid from your existing ETH balance. The maximum includes a reserve for refreshing bridge signatures; unused gas stays in your balance.';
+      const shortfall = Number(q.additionalEthNeeded) > 0;
+      $('#fund-fee-message').textContent = shortfall
+        ? `Add ${q.additionalEthNeeded} ETH to your existing deposit address ${LAST.ethAddress}, then select Refresh fee.`
+        : 'Your ETH balance covers this limit. Approve to continue the existing conversion.';
+      RECOVERY = { quote: q, session, credentialId, jobId };
+      $('#btn-fund-fee-approve').disabled = shortfall;
+      say('');
+      if (!$('#fund-fee-dialog').open) $('#fund-fee-dialog').showModal();
+    } catch (e) {
+      if (request === RECOVERY_REQUEST && session === SESSION) {
+        say(e.message || 'Could not update the fee', 'err');
+        $('#fund-fee-message').textContent = e.message || 'Could not update the fee';
+      }
+    } finally {
+      button.disabled = false;
+      $('#btn-fund-fee-refresh').disabled = false;
+    }
+  }
+
+  async function approveRecovery() {
+    const review = RECOVERY;
+    if (!review || RECOVERY_SUBMITTING) return;
+    if (review.session !== SESSION || review.credentialId !== CTX.credentialId() || review.jobId !== LAST?.job?.id) { closeRecovery(); return; }
+    RECOVERY_SUBMITTING = true;
+    $('#btn-fund-fee-approve').disabled = true;
+    $('#btn-fund-fee-refresh').disabled = true;
+    try {
+      if (Number(review.quote.additionalEthNeeded) > 0) throw new Error('Add the required ETH, then select Refresh fee.');
+      if (review.quote.expiresAt <= Date.now()) throw new Error('This fee quote expired. Select Refresh fee to review the current amount.');
+      await CTX.api('/api/fund/requote', { credentialId: review.credentialId, quoteId: review.quote.quoteId });
+      if (review.session !== SESSION || review.credentialId !== CTX.credentialId()) return;
+      closeRecovery();
+      say('Updated fee approved. Continuing your conversion.');
       await refresh();
-    } catch (e) { say(e.message || 'Could not update the quote', 'err'); }
-    finally { button.disabled = false; }
+    } catch (e) {
+      if (review.session === SESSION) $('#fund-fee-message').textContent = (e.message || 'Could not approve the fee') + ' Review a fresh fee before trying again.';
+    } finally {
+      RECOVERY_SUBMITTING = false;
+      $('#btn-fund-fee-refresh').disabled = false;
+    }
   }
 
   async function act(path) {
@@ -601,7 +658,8 @@ const Fund = (() => {
         : needsTap(j) ? 'Your KOIN is ready to land!'
         : j.stalled ? `Still on this step after ${j.stalled.minutes} minutes — your money is safe, but it needs a nudge.`
         : (j.route === "D" ? stepLabel(j).replaceAll("USDT", "USDC") : stepLabel(j));
-      $('#fund-job-label').textContent = label;
+      $('#fund-job-label').textContent = j.status === 'error' && j.canRequote && /gas|budget|fee limit|tip/i.test(j.error || '')
+        ? 'The gas fee changed. Review the updated fee to continue, or Retry to keep your existing limit.' : label;
       $('#fund-job-sub').textContent = jobActive && j.estKoinOut
         ? `${j.amountLabel || ''} → ≈ ${koin(j.estKoinOut)} KOIN · route ${j.route}`
         : '';
@@ -618,7 +676,7 @@ const Fund = (() => {
       $('#btn-fund-retry').hidden = !stuck;
       opt('#btn-fund-requote', n => { n.hidden = !j.canRequote; });
       $('#btn-fund-reset').hidden = !['done', 'error'].includes(j.status)
-        || (j.status !== 'done' && !!j.ethTxHash);
+        || (j.status !== 'done' && (!!j.ethTxHash || j.canRequote));
       opt('#fund-job .btn-row', (n) => { n.hidden = !(tap || stuck || j.status === 'done'); });
       $('#fund-job').className = 'status' + (j.status === 'done' ? ' ok' : j.status === 'error' ? ' err' : j.stalled ? ' warn' : '');
       /* The reason, when the server has one — a swallowed retry loop or a
