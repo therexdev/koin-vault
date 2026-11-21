@@ -85,6 +85,25 @@ function transfer(token, value) { return { address: token, topics: [ethers.id('T
     chain.koinBalanceSats = async () => '100000000000';
     console.log('Live sell limit: exact 10,000 KOIN boundary accepted, one satoshi over rejected before trading');
   }
+  // The shared ETH cap applies to the gross sale value on both routes.
+  {
+    const h = harness();
+    h.settings.maxEth = '0.5';
+    const quote = routes.quote;
+    for (const gross of ['0.2', '0.3', '0.5', '0.500000000000000001']) {
+      routes.quote = async route => ({ ...await quote(route), grossWei: eth(gross).toString(), minWei: eth('0.19').toString() });
+      const q = await h.trade.sellQuote(account, '100');
+      if (eth(gross) <= eth('0.5')) {
+        assert.equal(q.routes.filter(r => !r.error).length, 2, `${gross} ETH is within the sale cap`);
+      } else {
+        assert.ok(q.routes.every(r => /ETH trade limit/.test(r.error)), 'one wei over the cap is refused on both routes');
+      }
+    }
+    routes.quote = quote;
+    assert.equal(h.current(), undefined);
+    assert.equal(h.broadcasts.length, 0);
+    console.log('ETH sale cap: 0.5 ETH accepted, one wei over rejected on both routes');
+  }
   // Authentication binds account, origin, recipient, amount, chain and nonce.
   let h = harness();
   let prepared = await h.trade.prepare(account, { kind: 'withdraw', to: recipient, max: true }, identity);

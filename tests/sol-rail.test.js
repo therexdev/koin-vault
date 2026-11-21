@@ -56,11 +56,13 @@ const fresh = () => fs.mkdtempSync(path.join(os.tmpdir(), "solrail-"));
     assert.strictEqual((await sp("2")).label, "1.0", "a larger balance is clamped to the doubled SOL cap");
     const ethSp = (eth) => funding._spendableOf("eth", { ethWei: ethers.parseEther(eth).toString() });
     assert.strictEqual((await ethSp("0.1")).label, "0.0995", "the ETH gas reserve still applies");
-    assert.strictEqual((await ethSp("0.2")).label, "0.1995", "the ETH gas reserve still applies at the cap");
-    assert.strictEqual((await ethSp("0.2005")).label, "0.2", "the 0.2 ETH cap is spendable with the reserve covered");
-    assert.strictEqual((await ethSp("1")).label, "0.2", "a larger balance is clamped to the 0.2 ETH cap");
+    assert.strictEqual((await ethSp("0.3")).label, "0.2995", "amounts above the old 0.2 ETH cap are spendable");
+    assert.strictEqual((await ethSp("0.5")).label, "0.4995", "the ETH gas reserve still applies at the cap");
+    assert.strictEqual((await ethSp("0.5005")).label, "0.5", "the 0.5 ETH cap is spendable with the reserve covered");
+    assert.strictEqual((await ethSp("0.500500000000000001")).label, "0.5", "one wei above the cap plus reserve is clamped");
+    assert.strictEqual((await ethSp("1")).label, "0.5", "a larger balance is clamped to the 0.5 ETH cap");
     assert.strictEqual((await funding._spendableOf("sol", {})).sats, 0n, "no Solana balance read → nothing, not a crash");
-    console.log("✓ ETH/SOL spendable: doubled caps preserve fee reserves and the SOL minimum");
+    console.log("✓ ETH/SOL spendable: caps preserve fee reserves and the SOL minimum");
   }
 
   /* --- 2. Jupiter shapes --- */
@@ -184,7 +186,7 @@ const fresh = () => fs.mkdtempSync(path.join(os.tmpdir(), "solrail-"));
     const st = await funding.status(ACCT);
     assert.strictEqual(st.solAddress, en.solAddress);
     assert.ok(st.solRail.enabled);
-    assert.deepStrictEqual(st.caps, { eth: "0.2", stable: "150", sol: "1" });
+    assert.deepStrictEqual(st.caps, { eth: "0.5", stable: "150", sol: "1" });
     assert.strictEqual(st.balances.sol, "0.35");
     assert.strictEqual(st.spendable.sol, "0.34", "0.35 less the 0.01 reserve");
 

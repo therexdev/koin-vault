@@ -92,7 +92,7 @@ const S = {
   dataDir: path.join(__dirname, "..", "data"),
   demo: false,
   network: "mainnet",
-  maxEth: process.env.FUND_MAX_ETH || "0.2",
+  maxEth: process.env.FUND_MAX_ETH || "0.5",
   maxStable: process.env.FUND_MAX_STABLE || "150",
   slippageBps: parseInt(process.env.FUND_SLIPPAGE_BPS || "150", 10),
   gasSponsorKey: (process.env.ETH_GAS_SPONSOR_KEY || "").trim(),
