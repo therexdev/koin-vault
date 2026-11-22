@@ -13,6 +13,9 @@ if (abi.koilib_types.nested?.koinos?.nested) {
 }
 const serializer = new Serializer(abi.koilib_types);
 const PAGE_SIZE = 20;
+const HEAD_CACHE_MS = 15000;
+const MAX_HEAD_AGE_MS = 5 * 60 * 1000;
+const MAX_HEAD_LAG = 120n;
 const hash = value => typeof value === 'string' && /^0x1220[0-9a-f]{64}$/i.test(value);
 const sequence = value => /^\d{1,20}$/.test(String(value)) && BigInt(value) <= 18446744073709551615n;
 const timestamp = value => Number.isSafeInteger(Number(value)) && Number(value) > 0 && Number(value) <= 8640000000000000 ? Number(value) : null;
@@ -27,28 +30,79 @@ function createHistoryService({ network, urls, call = rpc, now = Date.now } = {}
   const net = NETWORKS[network];
   if (!net) throw new Error('Unknown history network');
   const endpoints = urls || (process.env.KOINOS_HISTORY_RPC || '').split(',').map(x => x.trim()).filter(Boolean);
-  const candidates = endpoints.length ? endpoints : rpcCandidates(network);
+  // A hosting override must not strand history on a retired or stalled node.
+  // Explicitly injected URLs remain isolated for private/test deployments.
+  const candidates = [...new Set(urls || [...endpoints, ...rpcCandidates(network), ...net.rpcs])].filter(Boolean);
   const pages = new Map(), pending = new Map(), metadata = new Map();
   let preferred = candidates[0];
+  let heads = { until: 0, work: null };
+
+  async function sources(deadline) {
+    if (!heads.work || heads.until <= now()) {
+      const work = Promise.all(candidates.map(async url => {
+        try {
+          const remaining = deadline - now();
+          if (remaining <= 0) return null;
+          const head = await call(url, 'chain.get_head_info', {}, Math.min(4000, remaining));
+          const height = head?.head_topology?.height;
+          const time = timestamp(head?.head_block_time);
+          if (!sequence(height) || BigInt(height) === 0n || !time
+              || now() - time > MAX_HEAD_AGE_MS || time - now() > 60000) return null;
+          return { url, height: BigInt(height) };
+        } catch (_) { return null; }
+      })).then(results => {
+        const healthy = results.filter(Boolean);
+        if (!healthy.length) throw failure('Transaction history is temporarily unavailable. Please try again.');
+        const latest = healthy.reduce((height, node) => node.height > height ? node.height : height, 0n);
+        return healthy.filter(node => latest - node.height <= MAX_HEAD_LAG).map(node => node.url);
+      });
+      heads = { until: now() + HEAD_CACHE_MS, work };
+      work.catch(() => { if (heads.work === work) heads = { until: 0, work: null }; });
+    }
+    const healthy = await heads.work;
+    return [...new Set([preferred, ...healthy])].filter(url => healthy.includes(url));
+  }
 
   async function request(method, params, deadline) {
-    for (const url of [...new Set([preferred, ...candidates])].filter(Boolean)) {
+    let empty;
+    for (const url of await sources(deadline)) {
       const remaining = deadline - now();
       if (remaining <= 0) break;
       try {
         const result = await call(url, method, params, Math.min(12000, remaining));
         if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error('Invalid RPC response');
         if (method === 'account_history.get_account_history' && result.values != null && !Array.isArray(result.values)) throw new Error('Invalid history response');
-        if (method === 'account_history.get_account_history') preferred = url;
+        if (method === 'account_history.get_account_history') {
+          const values = result.values || [];
+          if (values.length > PAGE_SIZE || values.some(e => !sequence(e.seq_num ?? '0') || (!e.trx && !e.block))
+              || (params.seq_num != null && values.some(e => BigInt(e.seq_num ?? '0') > BigInt(params.seq_num)))) {
+            throw new Error('Invalid history response');
+          }
+          // A lagging history index can return {} even while its chain node
+          // is healthy. Confirm an empty page with the remaining sources.
+          if (!values.length) { empty = result; continue; }
+          preferred = url;
+        }
         return result;
       } catch (_) { /* Try another configured node; errors must not become an empty feed. */ }
     }
+    if (empty) return empty;
     throw failure('Transaction history is temporarily unavailable. Please try again.');
   }
 
+  function nativeToken(address) {
+    if (address === net.koinContract || net.legacyKoinContracts?.includes(address)) {
+      return { symbol: net.nativeSymbol, decimals: 8, contract: net.koinContract };
+    }
+    if (address === net.vhpContract || net.legacyVhpContracts?.includes(address)) {
+      return { symbol: 'VHP', decimals: 8, contract: net.vhpContract };
+    }
+    return null;
+  }
+
   async function tokenMeta(address, deadline) {
-    if (address === net.koinContract) return { symbol: net.nativeSymbol, decimals: 8 };
-    if (address === net.vhpContract) return { symbol: 'VHP', decimals: 8 };
+    const native = nativeToken(address);
+    if (native) return { symbol: native.symbol, decimals: native.decimals };
     const cached = metadata.get(address);
     if (cached && cached.until > now()) return cached.value;
     let value = { symbol: 'Token', decimals: null };
@@ -80,7 +134,9 @@ function createHistoryService({ network, urls, call = rpc, now = Date.now } = {}
         if (from !== address && to !== address) continue;
         const units = String(data.value ?? '0');
         if (Amounts.fromUnits(units, 0) == null) continue;
+        const native = nativeToken(event.source);
         result.push({ contract: event.source, type, from, to, units,
+          ...(native && native.contract !== event.source ? { assetContract: native.contract } : {}),
           direction: from === address && to === address ? 'self' : to === address ? 'received' : 'sent' });
       } catch (_) { /* A nonstandard event remains visible as generic contract activity. */ }
     }

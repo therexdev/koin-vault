@@ -18,6 +18,13 @@ const listen = async server => { server.listen(0, '127.0.0.1'); await once(serve
   const rpc = http.createServer(async (req, res) => {
     let body = ''; for await (const chunk of req) body += chunk;
     const data = JSON.parse(body);
+    if (data.method === 'chain.get_head_info') {
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ jsonrpc: '2.0', id: data.id, result: {
+        head_topology: { height: '1000' }, head_block_time: String(Date.now()),
+      } }));
+      return;
+    }
     assert.equal(data.method, 'account_history.get_account_history');
     assert.equal(data.params.address, address); assert.equal(data.params.ascending, false);
     historyCalls++;
@@ -27,6 +34,8 @@ const listen = async server => { server.listen(0, '127.0.0.1'); await once(serve
   const rpcPort = await listen(rpc);
   const preload = path.join(dir, 'preload.cjs');
   fs.writeFileSync(preload, `
+    // Keep the real HTTP integration test offline, including history fallbacks.
+    require(${JSON.stringify(path.join(root, 'tools/rpc'))}).NETWORKS.mainnet.rpcs = ['http://127.0.0.1:${rpcPort}'];
     const veive = require(${JSON.stringify(path.join(root, 'tools/veive'))});
     veive.configure = () => {}; veive.reconcile = () => {};
     const funding = require(${JSON.stringify(path.join(root, 'tools/funding'))});

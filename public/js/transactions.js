@@ -11,7 +11,10 @@ const Transactions = (() => {
   function tokenItems(items, token) {
     if (!token?.address) return [];
     return items.filter(item => item.status !== 'failed').map(item => ({ ...item,
-      movements: (item.movements || []).filter(m => m.contract === token.address),
+      // assetContract is set by the server only for known retired native
+      // contracts. Keep the actual receipt source for explorer provenance.
+      movements: (item.movements || []).filter(m => m.contract === token.address
+        || (['koin', 'vhp'].includes(token.id) && m.assetContract === token.address)),
     })).filter(item => item.movements.length);
   }
 

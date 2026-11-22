@@ -9,6 +9,7 @@ const CUSTOM = Signer.fromSeed('history-custom-token').getAddress();
 const { koinContract: KOIN, vhpContract: VHP } = NETWORKS.mainnet;
 const koinToken = { id: 'koin', address: KOIN }, vhpToken = { id: 'vhp', address: VHP };
 const id = n => '0x1220' + n.toString(16).padStart(64, '0');
+const head = (height = '1000', time = Date.now()) => ({ head_topology: { height }, head_block_time: String(time) });
 const abi = structuredClone(require('../abi/token-abi.json'));
 delete abi.koilib_types.nested.koinos.nested.btype;
 delete abi.koilib_types.nested.koinos.nested._btype;
@@ -31,6 +32,7 @@ const tx = (n, events, extra = {}) => ({ seq_num: String(n), trx: { transaction:
   const call = async (url, method, params) => {
     calls.push({ url, method, params });
     if (url === 'down') throw new Error('unavailable');
+    if (method === 'chain.get_head_info') return head();
     if (method === 'account_history.get_account_history') return { values: params.seq_num ? [tx(5, [incoming])] : values };
     if (method === 'transaction_store.get_transactions_by_id') return { transactions: params.transaction_ids.map(transactionId => ({ transaction: { id: transactionId }, containing_blocks: [id(999)] })) };
     if (method === 'block_store.get_blocks_by_id') return { block_items: [{ block_id: id(999), block: { header: { timestamp: '1789524581650', height: '123' } } }] };
@@ -62,9 +64,10 @@ const tx = (n, events, extra = {}) => ({ seq_num: String(n), trx: { transaction:
 
   const unavailable = createHistoryService({ network: 'mainnet', urls: ['down'], call });
   await assert.rejects(unavailable.get(A), /temporarily unavailable/);
-  const empty = createHistoryService({ network: 'mainnet', urls: ['up'], call: async () => ({}) });
+  const empty = createHistoryService({ network: 'mainnet', urls: ['up'], call: async (_, method) => method === 'chain.get_head_info' ? head() : {} });
   assert.deepEqual((await empty.get(A)).items, []);
   const missingMeta = createHistoryService({ network: 'mainnet', urls: ['up'], call: async (_, method) => {
+    if (method === 'chain.get_head_info') return head();
     if (method === 'account_history.get_account_history') return { values: [tx(1, [custom])] };
     throw new Error('Unavailable');
   } });
@@ -73,10 +76,92 @@ const tx = (n, events, extra = {}) => ({ seq_num: String(n), trx: { transaction:
   assert.equal(unknown.movements[0].units, '9007199254740993');
   assert.equal(amount(unknown.movements[0]), '9,007,199,254,740,993 raw units');
   assert.equal(amount(page.items[1].movements[0]), '184,467,440,737.09551615 VHP');
-  const zero = createHistoryService({ network: 'mainnet', urls: ['up'], call: async (_, method) => method === 'account_history.get_account_history'
-    ? { values: [{ ...tx(0, []), seq_num: undefined }] } : {} });
+  const zero = createHistoryService({ network: 'mainnet', urls: ['up'], call: async (_, method) => method === 'chain.get_head_info' ? head()
+    : method === 'account_history.get_account_history' ? { values: [{ ...tx(0, []), seq_num: undefined }] } : {} });
   assert.equal((await zero.get(A)).items[0].sequence, '0'); assert.equal((await zero.get(A)).nextCursor, null);
   console.log('✓ Outages stay errors; missing metadata and timestamps are never invented; sequence zero works');
+
+  // Reproduce production: a configured endpoint still answers but its old
+  // history hides the new contracts. Current public nodes remain fallbacks.
+  {
+    const beforeHistory = process.env.KOINOS_HISTORY_RPC, beforeRpc = process.env.KOINOS_RPC;
+    process.env.KOINOS_HISTORY_RPC = 'stale'; process.env.KOINOS_RPC = 'stale';
+    const reads = [];
+    try {
+      const fresh = createHistoryService({ network: 'mainnet', call: async (url, method) => {
+        reads.push({ url, method });
+        if (method === 'chain.get_head_info') return head(url === 'stale' ? '500' : '1000', Date.now() - (url === 'stale' ? 86400000 : 0));
+        if (method === 'account_history.get_account_history') return url === 'stale' ? {} : { values: [tx(2, [incoming]), tx(1, [outgoing])] };
+        return {};
+      } });
+      const data = await fresh.get(A);
+      assert.equal(movementRows(data.items, koinToken).length, 1);
+      assert.equal(movementRows(data.items, vhpToken).length, 1);
+      assert.ok(!reads.some(r => r.url === 'stale' && r.method === 'account_history.get_account_history'));
+      assert.ok(reads.some(r => NETWORKS.mainnet.rpcs.includes(r.url) && r.method === 'account_history.get_account_history'));
+    } finally {
+      if (beforeHistory == null) delete process.env.KOINOS_HISTORY_RPC; else process.env.KOINOS_HISTORY_RPC = beforeHistory;
+      if (beforeRpc == null) delete process.env.KOINOS_RPC; else process.env.KOINOS_RPC = beforeRpc;
+    }
+    // A freshly timestamped but far-behind node is also excluded. A healthy
+    // chain with an empty/stalled index must not mask the next history node.
+    const calls = [];
+    const fallback = createHistoryService({ network: 'mainnet', urls: ['behind', 'empty-index', 'current'], call: async (url, method) => {
+      calls.push({ url, method });
+      if (method === 'chain.get_head_info') return head(url === 'behind' ? '800' : '1000');
+      if (method === 'account_history.get_account_history') return url === 'current' ? { values: [tx(1, [incoming])] } : {};
+      return {};
+    } });
+    assert.equal((await fallback.get(A)).items.length, 1);
+    assert.ok(!calls.some(r => r.url === 'behind' && r.method === 'account_history.get_account_history'));
+    assert.ok(calls.some(r => r.url === 'empty-index' && r.method === 'account_history.get_account_history'));
+    const staleOnly = createHistoryService({ network: 'mainnet', urls: ['stale'], call: async () => head('1000', Date.now() - 86400000) });
+    await assert.rejects(staleOnly.get(A), /temporarily unavailable/);
+    let clock = Date.now(), behind = false;
+    const choices = [], probes = [];
+    const recovering = createHistoryService({ network: 'mainnet', urls: ['preferred', 'fallback'], now: () => clock,
+      call: async (url, method) => {
+        if (method === 'chain.get_head_info') {
+          probes.push(url);
+          return head(behind && url === 'preferred' ? '800' : '1000', clock);
+        }
+        if (method === 'account_history.get_account_history') {
+          choices.push(url); return { values: [tx(1, [incoming])] };
+        }
+        return {};
+      } });
+    await Promise.all([recovering.get(A), recovering.get(A)]);
+    assert.deepEqual(probes, ['preferred', 'fallback'], 'Concurrent reads share freshness probes');
+    assert.deepEqual(choices, ['preferred']);
+    clock += 16000; behind = true;
+    await recovering.get(A);
+    assert.deepEqual(choices, ['preferred', 'fallback'], 'A previous successful source is dropped when it falls behind');
+    console.log('✓ Stale hosting overrides, lagging heads and empty indexes cannot hide current history; stale-only sources report an outage');
+  }
+
+  {
+    const oldKoin = NETWORKS.mainnet.legacyKoinContracts[0], oldVhp = NETWORKS.mainnet.legacyVhpContracts[0];
+    const legacy = createHistoryService({ network: 'mainnet', urls: ['up'], call: async (_, method) => {
+      if (method === 'chain.get_head_info') return head();
+      if (method === 'account_history.get_account_history') return { values: [
+        tx(3, [{ ...await event(oldKoin, 'transfer', { from: B, to: A, value: '125000000' }), name: 'koinos.contracts.token.transfer_event' }]),
+        tx(2, [await event(oldVhp, 'transfer', { from: A, to: B, value: '250000000' })]),
+        tx(1, [custom]),
+      ] };
+      if (method === 'chain.read_contract') throw new Error('Legacy native contracts do not need a metadata read');
+      return {};
+    } });
+    const data = await legacy.get(A);
+    assert.equal(data.items[0].movements[0].contract, oldKoin, 'Keep the real receipt source');
+    assert.equal(data.items[0].movements[0].assetContract, KOIN);
+    assert.equal(data.items[1].movements[0].assetContract, VHP);
+    assert.equal(data.items[2].movements[0].assetContract, undefined, 'A custom contract cannot impersonate native activity');
+    assert.equal(movementRows(data.items, koinToken)[0].amount, '1.25 KOIN');
+    assert.equal(movementRows(data.items, vhpToken)[0].amount, '2.5 VHP');
+    assert.deepEqual(movementRows(data.items, { id: 'koin', address: NETWORKS.harbinger.koinContract }), []);
+    assert.deepEqual(movementRows(data.items, { id: 'custom', address: KOIN }), [], 'Aliases apply only to native token sheets');
+    console.log('✓ Known retired KOIN/VHP contracts retain history under the current token, without changing source, balances or custom-token identity');
+  }
 
   const koinRows = movementRows(page.items, koinToken), vhpRows = movementRows(page.items, vhpToken);
   assert.deepEqual(koinRows.map(row => row.label), ['Received', 'Sent', 'Received']);

@@ -37,6 +37,10 @@ const NETWORKS = {
        this wrong makes every KOIN balance read 0. */
     koinContract: '19GYjDBVXU7keLbYvMLazsGQn3GTWHjHkK',
     vhpContract: '12Y5vW6gk8GceH53YfRkRre2Rrcsgw7Naq',
+    // Historical receipt sources only. Balance reads and sends always use
+    // the current contracts above; upgrades must not hide earlier activity.
+    legacyKoinContracts: ['15DJN4a8SgrbGhhGksSBASiSYjGnMU8dGL'],
+    legacyVhpContracts: ['18tWNU7E4yuQzz7hMVpceb9ixmaWLVyQsr'],
     rpcs: [
       'https://api.koinos.io',
       /* Fallback: koinosblocks' public node. api.koinos.io intermittently

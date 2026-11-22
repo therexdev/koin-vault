@@ -2,6 +2,27 @@
 
 KOIN Vault defaults to a standalone backend. No old-wallet code change is needed.
 
+## KOIN and VHP activity
+
+`KOINOS_HISTORY_RPC` accepts a comma-separated list of history-capable JSON-RPC
+nodes. History also retains `KOINOS_RPC` and the network's public nodes as
+fallbacks, so a hosting override cannot isolate it on an obsolete node.
+Freshness probes are shared for 15 seconds. Nodes whose head is over five
+minutes old, or more than 120 blocks behind the freshest available node, are
+skipped. An empty history index is checked against the remaining healthy nodes
+before the API reports no activity. If no current node answers, history reports
+an outage and keeps previously loaded rows visible.
+
+Known pre-upgrade mainnet KOIN and VHP receipt sources are displayed with the
+current native token. Each movement retains the original contract and explorer
+link. These aliases apply only to history: balances, sends and contract approvals
+continue to use the current contracts. Custom tokens are selected by contract
+identity, never by a matching KOIN or VHP symbol.
+
+Deploy the server and frontend together. After deployment, `/api/config` should
+report the new commit. Open each token's Activity list and verify recent transfers
+and older records; a wallet address with no transfers can legitimately be empty.
+
 ## Desktop phone sign-in checks
 
 The desktop **Use phone / QR code** option opens the browser's native passkey
