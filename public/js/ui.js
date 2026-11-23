@@ -349,6 +349,10 @@ const UI = (() => {
     if (!m) return;
     paintOffline();
     const note = byId('refresh-note');
+    // Failed responses have no network field. Supply the active identity so
+    // retained rows can never cross accounts, networks, or demo/live mode.
+    if (m.error) m = { ...m, address: m.address || CTX.address, network: CTX.cfg.network, demo: !!CTX.cfg.demo };
+    m = Portfolio.retain(m, CTX.model, Date.now(), CTX.modelAt);
     if (m.error) {
       if (CTX.model) {
         if (note) { note.hidden = false; note.textContent = `Could not refresh — showing balances from ${fmtWhen(CTX.modelAt)}`; }
@@ -358,7 +362,15 @@ const UI = (() => {
       }
       return;
     }
-    if (note) note.hidden = true;
+    if (note) {
+      const stale = m.rows.filter(row => row.balanceStale);
+      const missing = m.rows.some(row => row.unavailable && !row.balanceStale);
+      note.hidden = !stale.length && !missing;
+      note.textContent = stale.length
+        ? 'Updating balances — ' + stale.map(row => `${row.symbol || 'Token'} from ${fmtWhen(row.balanceAt)}`).join(', ')
+          + (missing ? '. Some balances are unavailable.' : '')
+        : missing ? 'Some balances are unavailable. Retrying automatically…' : '';
+    }
     const at = Date.now();
     renderModel(m, at);
     if (m.address === CTX.address) saveLast(m, at);
@@ -384,13 +396,13 @@ const UI = (() => {
     const vhp = m.vhp || { id: 'vhp', symbol: 'VHP', name: 'Virtual Hash Power', amountText: '—', usdText: '—', unavailable: true };
     /* No dollar total without the KOIN balance: a VHP-only sum labelled
        "Total balance" would be a number that is not the balance. */
-    const hasUsd = m.totalUsd != null && !koin.unavailable;
+    const hasUsd = m.totalUsd != null && (!koin.unavailable || koin.balanceStale);
     CTX.modelFromCache = !!fromCache;
 
     /* hero label + tags */
     const label = byId('hero-label');
     if (label) {
-      label.textContent = hasUsd ? 'Total balance' : 'Balance';
+      label.textContent = hasUsd ? m.partialTotal ? 'Known balance' : 'Total balance' : 'Balance';
       if (m.demo || m.priceSource === 'sample') label.appendChild(el('span', 'tag warn', 'Sample prices'));
       if (fromCache) {
         /* Restored from the last visit while the live numbers load. */
@@ -415,7 +427,9 @@ const UI = (() => {
     }
     const hn = byId('hero-note');
     if (hn) {
-      const text = koin.unavailable ? 'Balance unavailable right now'
+      const text = m.balanceStale ? 'Updating — showing last verified amounts'
+        : koin.unavailable ? 'Balance unavailable right now'
+        : m.rows.some(row => row.unavailable) ? 'Some balances are unavailable'
         : m.partialTotal ? 'Some tokens are not priced'
         : (!hasUsd && !m.demo) ? 'USD price unavailable right now' : '';
       hn.hidden = !text; hn.textContent = text;
@@ -478,7 +492,8 @@ const UI = (() => {
     const mid = el('span', 'mid');
     mid.appendChild(el('span', 't', r.symbol || '?'));
     const s = el('span', 's');
-    if (r.unavailable) { s.classList.add('warn-text'); s.textContent = r.error ? r.error : 'Balance unavailable'; if (r.error) s.classList.add('bad-text'); }
+    if (r.balanceStale) { s.classList.add('warn-text'); s.textContent = 'Updating · from ' + fmtWhen(r.balanceAt); }
+    else if (r.unavailable) { s.classList.add('warn-text'); s.textContent = r.error ? r.error : 'Balance unavailable'; if (r.error) s.classList.add('bad-text'); }
     else {
       /* Price first: a long name gets the ellipsis, the number never does. */
       s.textContent = r.priceText ? r.priceText + ' · ' + (r.name || '') : (r.name || '');
@@ -521,7 +536,7 @@ const UI = (() => {
     } else ptext = 'No price feed for this token';
     const sample = !!(m.demo || m.priceSource === 'sample');
     if (sample && (r.priceText || r.id === 'vhp')) ptext += ' · sample price';
-    price.textContent = ptext;
+    price.textContent = r.balanceStale ? 'Updating balance · last verified ' + fmtWhen(r.balanceAt) : ptext;
     if (r.priceStale && m.priceAt) { const c = document.createElement('span'); c.innerHTML = ' ' + CLOCK + ' as of ' + relTime(m.priceAt); price.appendChild(c); }
     else if (CTX.modelFromCache && r.usd != null) { const c = document.createElement('span'); c.innerHTML = ' ' + CLOCK + ' from ' + fmtWhen(CTX.modelAt); price.appendChild(c); }
     byId('tok-mana-row').hidden = r.id !== 'koin';
@@ -1011,6 +1026,7 @@ const UI = (() => {
   return {
     showTab, openSheet, closeSheet, toast, onView, applyIntent, setContext, reset, promptInstall, installOffer, setPasskeyBusy,
     paintPortfolio, paintProtection, renderSendSummary, decorateAddr, openToken,
+    balanceDisplay: id => sendRow(id),
     sendAsset: () => sendAsset, sendSymbol, sendDecimals, canSendAsset, setSendBusy,
     currentTab: () => currentTab, openSheetId: () => (sheetEl ? sheetEl.id : null),
   };

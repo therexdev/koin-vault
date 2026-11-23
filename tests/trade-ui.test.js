@@ -24,7 +24,7 @@ function node(selector) {
   return (match[1] === 'balance' ? balances : buttons)[match[2]];
 }
 const click = (id, target) => node('#' + id).handlers.click({ target: { closest: () => target } });
-let selected, koinSats = '9007199254740993', requests = [];
+let selected, koinSats = '9007199254740993', savedKoin = null, requests = [];
 const storage = new Map();
 const context = vm.createContext({ document: { querySelector: node, querySelectorAll: s => s === '[data-trade-asset]' ? Object.values(buttons) : [] }, Portfolio,
   Fund: { selectAsset: a => { selected = a; }, refresh: async () => {} },
@@ -32,7 +32,7 @@ const context = vm.createContext({ document: { querySelector: node, querySelecto
 });
 vm.runInContext(read('public/js/trade.js') + '\nthis.trade = Trade;', context);
 const trade = context.trade;
-trade.mount({ credentialId: () => 'account', koinBalance: () => koinSats, refreshKoin: async () => { koinSats = '12500000000'; },
+trade.mount({ credentialId: () => 'account', koinBalance: () => koinSats, koinDisplay: () => savedKoin, refreshKoin: async () => { koinSats = '12500000000'; },
   api: async (url, data) => { requests.push({ url, data }); return { quote: { routes: [] } }; },
 });
 const status = { enabled: true, accountActive: true, ethAddress: '0x' + '1'.repeat(40), solAddress: 'sol-fixture',
@@ -63,6 +63,14 @@ assert.equal(node('#sell-koin-card').hidden, false);
 assert.equal(node('#trade-buy-card').hidden, true);
 
 (async () => {
+  const beforeUnavailable = requests.length;
+  koinSats = ''; savedKoin = { sats: '9007199254740993', amount: '90071992.54740993', amountText: '90,071,992.54740993', balanceStale: true };
+  trade.updateBalances();
+  assert.equal(balances.koin.textContent, '90,071,992.54740993 · updating');
+  assert.match(node('#trade-balances-note').textContent, /last verified/);
+  await click('btn-sell-max');
+  assert.equal(requests.length, beforeUnavailable, 'A retained display cannot supply Sell Max or request a quote');
+  koinSats = '9007199254740993'; savedKoin = null;
   await click('btn-sell-max');
   assert.equal(node('#sell-koin-amount').value, '10000');
   assert.equal(requests.at(-1).data.amount, '10000', 'Max retains the live cap');

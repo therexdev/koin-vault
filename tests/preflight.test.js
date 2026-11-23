@@ -53,7 +53,7 @@ function serve(reply) {
   HOOK = async (url, opts) => {
     const body = JSON.parse(opts.body);
     calls.push(body);
-    return { json: async () => reply(body) };
+    return { ok: true, status: 200, json: async () => reply(body) };
   };
   return calls;
 }

@@ -23,7 +23,7 @@ function open(storage = saved(), options = {}) {
     transactionFeed: null,
     LS_ADDR: 'bw_smart_addr', ADDRESS: null, ACTIVE: false, RECOVERY: null, RESUMING: null,
     CREDENTIALS: [], PENDING_BACKUP: null, POLL: null, DAPP: null,
-    PAINT_GEN: 0, PAINTING: false, PAINT_AGAIN: false, BALANCE_SATS: '', VHP_BALANCE_SATS: '', TOKEN_BALANCES: {},
+    PAINT_GEN: 0, PAINTING: false, PAINT_AGAIN: false, BALANCE_RETRY: null, BALANCE_SATS: '', VHP_BALANCE_SATS: '', TOKEN_BALANCES: {},
     OPEN_RECOVERY: !!options.recover, PENDING_INTENT: options.intent || null, PENDING_CONNECT: options.connect || null,
     $: node, document: { addEventListener() {} }, confirm: () => true,
     localStorage: { getItem: key => storage.get(key) || null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },
@@ -48,6 +48,7 @@ function open(storage = saved(), options = {}) {
     loadDapp: () => options.dapp || null, saveDapp: value => { context.DAPP = value; },
     alertLine: message => { context.alert = message; },
     setTimeout: callback => { timers.push(callback); },
+    clearTimeout() {},
     setInterval: callback => { const id = Symbol(); intervals.set(id, callback); return id; },
     clearInterval: id => intervals.delete(id), encodeURIComponent,
   });

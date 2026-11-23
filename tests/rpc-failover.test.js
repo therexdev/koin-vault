@@ -20,6 +20,9 @@ const { installFailover } = require('../tools/rpc-failover');
     if (kind === 'timeout') return;
     if (kind === 'html') return res.end('<html>Bad Gateway</html>');
     res.setHeader('Content-Type', 'application/json');
+    if (kind === 'blocked') { res.statusCode = 403; return res.end(JSON.stringify({ error: { message: 'Access denied' } })); }
+    if (kind === 'malformed') return res.end(JSON.stringify({ status: 'unavailable' }));
+    if (kind === 'null') return res.end(JSON.stringify({ result: null }));
     res.end(JSON.stringify(kind === 'ok' ? { result: { value: '42' } } : { error: errors[kind] }));
   }
   async function serve(handler) {
@@ -69,7 +72,7 @@ const { installFailover } = require('../tools/rpc-failover');
 
     // These JSON-RPC errors arrive with HTTP 200, including a nested data
     // payload. A broken node's broker must not leave a balance unavailable.
-    for (const failure of ['amqp', 'wrappedAmqp', 'channel']) {
+    for (const failure of ['amqp', 'wrappedAmqp', 'channel', 'blocked', 'malformed', 'null']) {
       mode = failure;
       for (const method of ['chain.read_contract', 'chain.get_account_rc', 'chain.get_head_info', 'account_history.get_account_history', 'transaction_store.get_transactions_by_id']) {
         const before = backup;
@@ -111,7 +114,7 @@ const { installFailover } = require('../tools/rpc-failover');
     assert.deepEqual(reads, [{ value: '42' }, { value: '42' }, { value: '42' }], 'concurrent token and mana reads all recover');
     assert.equal(backup - beforeConcurrent, 3);
 
-    for (const failure of ['amqp', 'wrappedAmqp', 'timeout', 'html']) {
+    for (const failure of ['amqp', 'wrappedAmqp', 'timeout', 'html', 'blocked', 'malformed']) {
       mode = failure;
       for (const method of ['chain.submit_transaction', 'chain.submit_block', 'unknown.write']) {
         const before = [primary, backup];
@@ -146,6 +149,13 @@ const { installFailover } = require('../tools/rpc-failover');
     const beforeDown = [primary, backup];
     await assert.rejects(make().call('chain.read_contract', {}), /AMQP connection is not open/);
     assert.deepEqual([primary - beforeDown[0], backup - beforeDown[1]], [1, 1], 'all brokers down: one pass, then report the error');
+    const single = installFailover(new Provider([a]), { timeoutMs: 100, retrySingleNode: true });
+    const beforeSingle = primary;
+    await assert.rejects(single.call('chain.get_head_info', {}), /AMQP/);
+    assert.equal(primary - beforeSingle, 2, 'A single-node read is retried once, then stops');
+    const beforeWrite = primary;
+    await assert.rejects(single.call('chain.submit_transaction', {}), /AMQP/);
+    assert.equal(primary - beforeWrite, 1, 'Single-node retries never replay a transaction');
     console.log('rpc failover tests passed');
   } finally {
     for (const s of servers) { s.closeAllConnections(); s.close(); }

@@ -62,12 +62,14 @@ const K = {
   modules: { verifier: '', modSign: '', modValidation: '' },
 };
 
-let _provider = null, _sponsor = null, _sponsorAddr = '', _chainId = '';
+let _provider = null, _balanceProvider = null, _sponsor = null, _sponsorAddr = '', _chainId = '';
+const balanceReads = new Map();
 
 function configure(opts) {
   Object.assign(K, opts || {});
   if (!K.rpcs.length) K.rpcs = rpcCandidates(K.network);
-  _provider = null; _sponsor = null; _sponsorAddr = ''; _chainId = '';
+  _provider = null; _balanceProvider = null; _sponsor = null; _sponsorAddr = ''; _chainId = '';
+  balanceReads.clear();
 }
 
 const net = () => NETWORKS[K.network];
@@ -108,16 +110,35 @@ async function chainId() {
 
 const koinContract = () => new Contract({ id: net().koinContract, abi: TOKEN_ABI, provider: provider() });
 
+function balanceProvider() {
+  if (!_balanceProvider) {
+    // Keep balance refreshes responsive without changing submission timeouts.
+    // Try each backup; a single configured node gets one bounded retry.
+    _balanceProvider = installFailover(new Provider(K.rpcs.slice()), { timeoutMs: 4000, retrySingleNode: true });
+  }
+  return _balanceProvider;
+}
+
+function balanceRead(key, read) {
+  // /account and /portfolio request the same KOIN balance concurrently.
+  // Share only in-flight work; a later spend always makes a fresh read.
+  if (!balanceReads.has(key)) {
+    const work = Promise.resolve().then(read);
+    balanceReads.set(key, work);
+    const clear = () => { if (balanceReads.get(key) === work) balanceReads.delete(key); };
+    work.then(clear, clear);
+  }
+  return balanceReads.get(key);
+}
+
 async function koinBalance(addr) {
-  const { result } = await koinContract().functions.balance_of({ owner: addr });
-  return Number(result?.value || 0) / 1e8;
+  return Number(await koinBalanceSats(addr)) / 1e8;
 }
 async function koinBalanceSats(addr) {
-  const { result } = await koinContract().functions.balance_of({ owner: addr });
-  return String(result?.value || '0');
+  return tokenBalanceSats(net().koinContract, addr);
 }
 async function mana(addr) {
-  const rc = await provider().getAccountRc(addr);
+  const rc = await balanceRead(`rc:${addr}`, () => balanceProvider().getAccountRc(addr));
   return Number(rc) / 1e8;
 }
 
@@ -129,8 +150,11 @@ const tokenContractAt = (id) => new Contract({ id, abi: TOKEN_ABI, provider: pro
 const vhpContract = () => tokenContractAt(net().vhpContract);
 
 async function tokenBalanceSats(contractId, owner) {
-  const { result } = await tokenContractAt(contractId).functions.balance_of({ owner });
-  return String(result?.value || '0');
+  return balanceRead(`${contractId}:${owner}`, async () => {
+    const token = new Contract({ id: contractId, abi: TOKEN_ABI, provider: balanceProvider() });
+    const { result } = await token.functions.balance_of({ owner });
+    return String(result?.value || '0');
+  });
 }
 async function vhpBalanceSats(addr) {
   return net().vhpContract ? tokenBalanceSats(net().vhpContract, addr) : '0';

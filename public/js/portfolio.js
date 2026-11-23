@@ -147,6 +147,39 @@ const Portfolio = (() => {
     };
   }
 
+  /** Keep verified display amounts per token during a partial outage. These
+      rows remain unavailable for spending; app.js uses only the live model. */
+  function retain(current, previous, at = Date.now(), previousAt) {
+    const same = previous && current.address === previous.address
+      && current.network === previous.network && !!current.demo === !!previous.demo;
+    const oldRows = same ? previous.rows || [] : [];
+    const source = current.error && same
+      ? { ...previous, rows: oldRows.map(row => ({ ...row, unavailable: true, balanceStale: false,
+        sats: null, amount: null, amountText: '—', usd: null, usdText: '—' })) }
+      : current;
+    if (source.error || !source.rows) return current;
+    const rows = source.rows.map(row => {
+      if (!row.unavailable) return { ...row, balanceAt: at, balanceStale: false };
+      const old = oldRows.find(old => old.id === row.id && old.address === row.address);
+      const verifiedAt = old && (old.balanceAt || previousAt);
+      if (!old || !/^\d+$/.test(String(old.sats ?? '')) || !verifiedAt
+          || at - verifiedAt > 24 * 3600 * 1000 || verifiedAt > at) return { ...row, balanceStale: false };
+      return { ...old, unavailable: true, balanceStale: true, balanceAt: verifiedAt, error: row.error };
+    });
+    const priced = rows.filter(row => row.usd != null);
+    const totalUsd = priced.length ? priced.reduce((sum, row) => sum + row.usd, 0) : null;
+    return {
+      ...source, rows, koin: rows.find(row => row.id === 'koin') || null,
+      vhp: rows.find(row => row.id === 'vhp') || null,
+      others: rows.filter(row => row.id !== 'koin' && row.id !== 'vhp'),
+      totalUsd, totalUsdText: fmtUsd(totalUsd),
+      allPriced: priced.length === rows.length && rows.length > 0,
+      partialTotal: totalUsd != null && priced.length !== rows.length,
+      balanceStale: rows.some(row => row.balanceStale),
+      refreshFailed: !!current.error,
+    };
+  }
+
   /** Fetch + shape. Any failure resolves to a model with `error` set, so
       the screen can keep the last good numbers and show a quiet notice. */
   async function load(address, apiFn) {
@@ -155,11 +188,15 @@ const Portfolio = (() => {
       + (tokens.length ? '&tokens=' + encodeURIComponent(tokens.join(',')) : '');
     try {
       const p = await apiFn(q);
+      if (p.address !== address || !Array.isArray(p.assets)
+          || !['koin', 'vhp'].every(id => p.assets.some(row => row.id === id))) {
+        throw new Error('Balance response unavailable');
+      }
       return model(p);
     } catch (e) {
-      return { error: String(e && e.message || e), rows: [], others: [], koin: null, vhp: null, totalUsdText: '—' };
+      return { address, error: String(e && e.message || e), rows: [], others: [], koin: null, vhp: null, totalUsdText: '—' };
     }
   }
 
-  return { load, model, fromSats, fmtAmount, fmtUsd, fmtPrice, customTokens, addToken, removeToken, MAX_TOKENS };
+  return { load, model, retain, fromSats, fmtAmount, fmtUsd, fmtPrice, customTokens, addToken, removeToken, MAX_TOKENS };
 })();

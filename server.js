@@ -596,14 +596,14 @@ api.account = async (params) => {
   if (!chain.isAddr(address)) throw httpError(400, 'a valid Koinos address is required');
   const smart = veive.status(params.get('credentialId')) || undefined;
   if (DEMO) return { ok: true, demo: true, koin: 124.19, koinSats: '12419000000', mana: 5, smart };   // same sample as /api/portfolio
-  const [koin, koinSats, mana] = await Promise.all([
-    chain.koinBalance(address).catch(() => 0),
+  const [koinSats, mana] = await Promise.all([
     /* The exact integer too: "Send all" has to name the whole balance to the
        last satoshi, and a float cannot promise that. */
-    chain.koinBalanceSats(address).catch(() => '0'),
-    chain.mana(address).catch(() => 0),
+    chain.koinBalanceSats(address).catch(() => null),
+    chain.mana(address).catch(() => null),
   ]);
-  return { ok: true, koin, koinSats: String(koinSats), mana, smart };
+  return { ok: true, koin: koinSats == null ? null : Number(koinSats) / 1e8,
+    koinSats: koinSats == null ? null : String(koinSats), mana, smart };
 };
 
 /* ---------------- portfolio ----------------
@@ -655,7 +655,7 @@ api.portfolio = async (params) => {
   const [koinSats, vhpSats, mana, px] = await Promise.all([
     chain.koinBalanceSats(address).catch(() => null),
     chain.vhpBalanceSats(address).catch(() => null),
-    chain.mana(address).catch(() => 0),
+    chain.mana(address).catch(() => null),
     prices.snapshot(),
   ]);
   const usdOf = (amount, price) => (price && price.value != null && amount != null ? Number(amount) * price.value : null);
@@ -687,7 +687,7 @@ api.portfolio = async (params) => {
     assets: all,
     /* The sum of what CAN be priced; allPriced says whether that is all of it. */
     totalUsd: priced.length ? priced.reduce((s, a) => s + a.usd, 0) : null,
-    allPriced: priced.length === all.filter(a => !a.unavailable).length && priced.length > 0,
+    allPriced: priced.length === all.length && priced.length > 0,
   };
 };
 

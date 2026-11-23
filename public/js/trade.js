@@ -36,17 +36,22 @@ const Trade = (() => {
   const symbol = asset => assets.find(a => a.id === asset)?.symbol || '';
   function updateBalances() {
     if (!ctx) return;
+    let updatingKoin = false;
     for (const asset of assets) {
       const node = document.querySelector(`[data-trade-balance="${asset.id}"]`);
       const sats = ctx.koinBalance?.();
       const value = asset.id === 'koin'
         ? /^\d+$/.test(sats || '') ? Portfolio.fromSats(sats, 8) : null
         : state?.balances?.[asset.id];
-      node.textContent = value != null && /^\d+(\.\d+)?$/.test(String(value))
+      const saved = asset.id === 'koin' && value == null ? ctx.koinDisplay?.() : null;
+      if (saved?.amount != null && (saved.balanceStale || /^\d+$/.test(saved.sats || ''))) updatingKoin = true;
+      node.textContent = asset.id === 'koin' && updatingKoin ? saved.amountText + ' · updating'
+        : value != null && /^\d+(\.\d+)?$/.test(String(value))
         ? Portfolio.fmtAmount(String(value), asset.dp) : state ? 'Unavailable' : 'Loading…';
     }
     const note = $('#trade-balances-note');
     note.textContent = state?.demo ? 'Sample balances · demo mode'
+      : updatingKoin ? 'Updating KOIN — showing the last verified amount.'
       : state?.balancesError || state?.balances?.solError ? 'Some balances are unavailable. Refresh to try again.'
       : !state?.balances ? 'Waiting for deposit balances. You can refresh to try again.'
       : 'KOIN is in your wallet. Other balances are at your deposit addresses.';

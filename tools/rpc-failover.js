@@ -19,24 +19,33 @@ async function callNode(url, method, params, signal) {
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
     signal,
   });
-  const json = await response.json();
-  if (json.result !== undefined) return json.result;
-  if (!json.error) throw new Error(response.status >= 400 ? `Koinos RPC HTTP ${response.status}` : 'undefined error');
+  let json;
+  try { json = await response.json(); }
+  catch (_) { throw Object.assign(new Error(`Invalid JSON from Koinos RPC (HTTP ${response.status})`), { endpointFailure: true }); }
+  // Gateways sometimes block a node with a JSON 403/415 response. That is
+  // an endpoint failure too; it must not strand reads on that one node.
+  const httpFailure = !response.ok;
+  const endpointFailure = httpFailure && ([401, 403, 404, 408, 415, 429].includes(response.status) || response.status >= 500);
+  if (!json || typeof json !== 'object' || Array.isArray(json)) {
+    throw Object.assign(new Error('Invalid JSON-RPC response'), { endpointFailure: true });
+  }
+  if (!httpFailure && json.result != null) return json.result;
+  if (!json.error) throw Object.assign(new Error(httpFailure ? `Koinos RPC HTTP ${response.status}` : 'Invalid JSON-RPC response'), { endpointFailure: httpFailure ? endpointFailure : true });
   // Preserve koilib's error format: transaction callers inspect the nested
   // chain error and receipt logs to distinguish rejections from lost replies.
   const { message, data } = json.error;
-  if (!data) throw new Error(message);
+  if (!data) throw Object.assign(new Error(message), { endpointFailure });
   let detail;
   try { detail = JSON.parse(data); }
   catch (_) { detail = { data }; }
-  throw new Error(JSON.stringify({ ...(message && { error: message }), ...detail }));
+  throw Object.assign(new Error(JSON.stringify({ ...(message && { error: message }), ...detail })), { endpointFailure });
 }
 
-function installFailover(provider, { timeoutMs = 25000 } = {}) {
+function installFailover(provider, { timeoutMs = 25000, retrySingleNode = false } = {}) {
   provider.call = async (method, params) => {
     const urls = provider.rpcNodes.slice();
     const start = provider.currentNodeId;
-    const attempts = READ.test(method) ? urls.length : 1;
+    const attempts = READ.test(method) ? Math.max(urls.length, retrySingleNode ? 2 : 1) : 1;
     for (let i = 0; i < attempts; i++) {
       const index = (start + i) % urls.length;
       // Isolate calls so concurrent reads and late timeout responses cannot
@@ -58,7 +67,8 @@ function installFailover(provider, { timeoutMs = 25000 } = {}) {
       } catch (e) {
         provider.currentNodeId = (index + 1) % urls.length;
         const message = String(e.message || e);
-        if (i + 1 === attempts || !(TRANSIENT.test(message) || BROKER_UNAVAILABLE.test(message))) throw e;
+        if (i + 1 === attempts || !(e.endpointFailure || TRANSIENT.test(message) || BROKER_UNAVAILABLE.test(message))) throw e;
+        if (urls.length === 1) await new Promise(resolve => setTimeout(resolve, 150));
       } finally {
         clearTimeout(timer);
       }
