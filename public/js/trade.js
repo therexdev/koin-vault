@@ -193,7 +193,7 @@ const Trade = (() => {
     $('#btn-sell-max').addEventListener('click', () => {
       const sats = ctx.koinBalance?.();
       if (!/^\d+$/.test(sats || '')) { message('Refresh your wallet balance first.'); return; }
-      const capped = BigInt(sats) > 1000000000000n ? '1000000000000' : sats;
+      const capped = BigInt(sats) > 2000000000000n ? '2000000000000' : sats;
       $('#sell-koin-amount').value = Portfolio.fromSats(capped, 8);
       quote();
     });

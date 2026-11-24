@@ -17,7 +17,7 @@ Only ETH is a sell destination. Quotes compare the same two markets used
 for buying, including the on-chain bridge fee. Each quote expires after two
 minutes. It fixes swap minimums, the platform fee, fee recipient and a gas
 budget. The existing FUND_FEE_PCT configuration sets the quoted platform
-fee, which is paid once in ETH. The server caps each sale at **10,000 KOIN** during live testing.
+fee, which is paid once in ETH. The server caps each sale at **20,000 KOIN** during live testing.
 The existing FUND_MAX_ETH also limits the ETH value of a sale. These withdrawals have no platform withdrawal fee.
 
 Sales require enough native ETH at the existing Ethereum address upfront
@@ -111,3 +111,10 @@ This includes the deployed worker recovery, Permit2 renewal and explicit buy
 requote fixes. Hostinger uses Node 22, `npm start`, existing environment settings
 and DATA_DIR. No real sale or withdrawal is broadcast by development tooling.
 The owner performs funded tests after deployment, as described above.
+
+### Sale limit increase, 2026-11-24
+
+The per-sale limit is now **20,000 KOIN**. Quote creation, approval preparation
+and submission enforce the new cap. Max chooses the smaller of the available
+KOIN balance and 20,000 KOIN. The existing ETH-value ceiling may impose a lower
+limit. Deploy the frontend and funding worker together for the change to take effect.

@@ -70,10 +70,13 @@ assert.equal(node('#trade-buy-card').hidden, true);
   assert.match(node('#trade-balances-note').textContent, /last verified/);
   await click('btn-sell-max');
   assert.equal(requests.length, beforeUnavailable, 'A retained display cannot supply Sell Max or request a quote');
-  koinSats = '9007199254740993'; savedKoin = null;
-  await click('btn-sell-max');
-  assert.equal(node('#sell-koin-amount').value, '10000');
-  assert.equal(requests.at(-1).data.amount, '10000', 'Max retains the live cap');
+  savedKoin = null;
+  for (const [balance, amount] of [['9007199254740993', '20000'], ['2000000000000', '20000'], ['1999999999999', '19999.99999999']]) {
+    koinSats = balance;
+    await click('btn-sell-max');
+    assert.equal(node('#sell-koin-amount').value, amount);
+    assert.equal(requests.at(-1).data.amount, amount, 'Max uses the smaller of the balance and 20,000 KOIN');
+  }
   trade.render({ ...status, job: { status: 'error' } });
   assert.equal(node('#btn-sell-max').disabled, true);
   assert.equal(node('#btn-eth-withdraw').disabled, true, 'an unresolved buy reserves the funds');

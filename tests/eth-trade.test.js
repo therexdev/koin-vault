@@ -71,19 +71,26 @@ function transfer(token, value) { return { address: token, topics: [ethers.id('T
   {
     const h = harness();
     chain.koinBalanceSats = async () => '2000000000000';
-    for (const amount of ['9999.99999999', '10000']) {
+    for (const amount of ['10000', '10000.00000001', '19999.99999999', '20000']) {
       const q = await h.trade.sellQuote(account, amount);
       assert.equal(q.routes.filter(r => !r.error).length, 2);
       const prep = await h.trade.prepare(account, { kind: 'sell', quoteId: q.routes[0].quoteId }, identity);
       assert.equal(prep.review.amountKoin, amount);
     }
-    for (const amount of ['10000.00000001', '10001', '20000']) {
-      await assert.rejects(h.trade.sellQuote(account, amount), /10,000 KOIN per sale/);
+    for (const amount of ['20000.00000001', '20001', '30000']) {
+      await assert.rejects(h.trade.sellQuote(account, amount), /20,000 KOIN per sale/);
     }
     assert.equal(h.current(), undefined);
     assert.equal(h.broadcasts.length, 0);
+    for (const route of ['B', 'C']) {
+      const sale = harness();
+      const q = await sale.trade.sellQuote(account, '20000');
+      await approve(sale, { kind: 'sell', quoteId: q.routes.find(r => r.route === route).quoteId });
+      assert.equal(sale.current().amount, '2000000000000', 'the full limit survives approval and submission');
+      assert.equal(sale.broadcasts.length, 0);
+    }
     chain.koinBalanceSats = async () => '100000000000';
-    console.log('Live sell limit: exact 10,000 KOIN boundary accepted, one satoshi over rejected before trading');
+    console.log('Live sell limit: 20,000 KOIN approved on both routes, one satoshi over rejected before trading');
   }
   // The shared ETH cap applies to the gross sale value on both routes.
   {

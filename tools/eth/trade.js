@@ -14,10 +14,10 @@ const tapStates = new Set(['sell_swap', 'sell_bridge', 'sell_refresh']);
 const fmt = ethers.formatEther;
 const clone = value => JSON.parse(JSON.stringify(value));
 // Temporary per-sale ceiling for the owner-authorized live testing rollout.
-const MAX_SELL_KOIN_SATS = 10000n * 100000000n;
+const MAX_SELL_KOIN_SATS = 20000n * 100000000n;
 function assertSellLimit(amount) {
   if (BigInt(amount) <= 0n || BigInt(amount) > MAX_SELL_KOIN_SATS) {
-    throw new Error('Live testing is limited to 10,000 KOIN per sale');
+    throw new Error('Live testing is limited to 20,000 KOIN per sale');
   }
 }
 
