@@ -10,7 +10,7 @@ const Portfolio = vm.runInNewContext(read('public/js/portfolio.js') + '\nPortfol
 function element(dataset = {}) {
   return { dataset, hidden: false, disabled: false, value: '', textContent: '', innerHTML: '', attributes: {}, handlers: {},
     classList: { toggle() {} }, setAttribute(k, v) { this.attributes[k] = v; },
-    addEventListener(k, fn) { this.handlers[k] = fn; }, focus() {}, scrollIntoView() {}, close() {}, showModal() {},
+    addEventListener(k, fn) { this.handlers[k] = fn; }, focus() {}, scrollIntoView() {}, close() { this.open = false; }, showModal() { this.open = true; },
   };
 }
 const ids = new Map([...read('public/index.html').matchAll(/\bid="([^"]+)"/g)].map(m => [m[1], element()]));
@@ -24,7 +24,7 @@ function node(selector) {
   return (match[1] === 'balance' ? balances : buttons)[match[2]];
 }
 const click = (id, target) => node('#' + id).handlers.click({ target: { closest: () => target } });
-let selected, koinSats = '9007199254740993', savedKoin = null, requests = [];
+let selected, koinSats = '9007199254740993', savedKoin = null, requests = [], gasPreview, gasSignatures = 0;
 const storage = new Map();
 const context = vm.createContext({ document: { querySelector: node, querySelectorAll: s => s === '[data-trade-asset]' ? Object.values(buttons) : [] }, Portfolio,
   Fund: { selectAsset: a => { selected = a; }, refresh: async () => {} },
@@ -32,9 +32,12 @@ const context = vm.createContext({ document: { querySelector: node, querySelecto
 });
 vm.runInContext(read('public/js/trade.js') + '\nthis.trade = Trade;', context);
 const trade = context.trade;
-trade.mount({ credentialId: () => 'account', koinBalance: () => koinSats, koinDisplay: () => savedKoin, refreshKoin: async () => { koinSats = '12500000000'; },
-  api: async (url, data) => { requests.push({ url, data }); return { quote: { routes: [] } }; },
-});
+const mountContext = { credentialId: () => 'account', koinBalance: () => koinSats, koinDisplay: () => savedKoin, refreshKoin: async () => { koinSats = '12500000000'; },
+  signPrepared: async () => { gasSignatures++; return 'fixture-signature'; },
+  api: async (url, data) => { requests.push({ url, data });
+    return data.kind === 'update-gas' ? gasPreview : url.endsWith('/submit') ? { trade: { kind: 'sell' } } : { quote: { routes: [] } }; },
+};
+trade.mount(mountContext);
 const status = { enabled: true, accountActive: true, ethAddress: '0x' + '1'.repeat(40), solAddress: 'sol-fixture',
   balances: { vkoin: '23.00000001', usdt: '100.000001', eth: '0.0123456789', sol: '1.000000009', usdc: '0' } };
 trade.render(status);
@@ -135,6 +138,31 @@ assert.equal(node('#trade-buy-card').hidden, true);
   assert.equal(reloaded.isNoticeDismissed('buy', buy, 'another-wallet'), false);
   reloaded.forget(); reloaded.render(receipt);
   assert.equal(node('#trade-progress').hidden, true, 'signing back in preserves the acknowledgement');
+
+  trade.mount(mountContext);
+  gasPreview = { ref: 'gas-review', challenge: 'gas-challenge', expires: Date.now() + 120000,
+    review: { kind: 'update-gas', amountKoin: '20000', minimumEth: '0.04', platformFeeEth: '0.0005', actualGasEth: '0.0002', previousGasPriceGwei: '1.5', gasPriceGwei: '7.5',
+      previousGasBudgetEth: '0.001', gasBudgetEth: '0.003', additionalGasEth: '0.002', remainingGasEth: '0.0028', gasReady: true } };
+  trade.render({ ...status, trade: { id: 'paused-sale', kind: 'sell', status: 'error', canUpdateGas: true, error: 'Gas exceeds approved price' } });
+  assert.equal(node('#btn-trade-update-gas').hidden, false);
+  await click('btn-trade-update-gas');
+  assert.equal(node('#eth-withdraw-dialog').open, true);
+  assert.match(node('#eth-withdraw-review').textContent, /New maximum total network fee: 0.003 ETH/);
+  assert.match(node('#eth-withdraw-review').textContent, /minimum output and conversion fee stay the same/);
+  assert.equal(gasSignatures, 0, 'opening a new estimate never approves or submits it');
+  assert.equal(node('#btn-eth-confirm').disabled, false);
+  await click('btn-eth-confirm');
+  assert.equal(gasSignatures, 1);
+  assert.equal(requests.at(-1).data.ref, 'gas-review');
+  assert.match(node('#trade-message').textContent, /existing sale is resuming/);
+  gasPreview = { ...gasPreview, review: { ...gasPreview.review, gasReady: false, shortfallEth: '0.001' } };
+  await click('btn-trade-update-gas');
+  assert.equal(node('#btn-eth-confirm').disabled, true);
+  assert.match(node('#eth-withdraw-review').textContent, /Add 0.001 ETH/);
+  await click('btn-eth-confirm');
+  assert.equal(gasSignatures, 1, 'an unfunded estimate cannot request approval');
+  trade.render({ ...status, trade: { kind: 'sell', status: 'sell_fee', canUpdateGas: false } });
+  assert.equal(node('#btn-trade-update-gas').hidden, true);
 
   koinSats = ''; trade.forget();
   assert.equal(node('#trade-flow').hidden, true);

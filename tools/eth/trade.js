@@ -11,8 +11,16 @@ const RC = require('./route-constants');
 const { BRIDGE } = require('./bridge-constants');
 const done = j => !j || ['done', 'cancelled', 'failed'].includes(j.status);
 const tapStates = new Set(['sell_swap', 'sell_bridge', 'sell_refresh']);
+const ethSteps = ['eth_redeem', 'approve_vkoin', 'approve_sell_router', 'swap_vkoin_usdt',
+  'approve_sell_usdt_reset', 'approve_sell_usdt', 'swap_usdt_eth', 'sell_fee'];
+// Conservative allowances for later steps; the next step uses a live estimate.
+const stepGas = [400000n, 65000n, 100000n, 450000n, 65000n, 65000n, 300000n, 40000n];
 const fmt = ethers.formatEther;
 const clone = value => JSON.parse(JSON.stringify(value));
+const fingerprint = j => crypto.createHash('sha256').update(JSON.stringify(j)).digest('hex');
+const gasHeadroom = units => (BigInt(units) * 12n + 9n) / 10n;
+const canUpdateGas = j => !!(j?.kind === 'sell' && j.status === 'error' && !j.pendingEth && !j.pendingKoin
+  && ethSteps.includes(j.failedAt) && /gas exceeds the approved price|reached its approved gas budget/.test(j.error || ''));
 // Temporary per-sale ceiling for the owner-authorized live testing rollout.
 const MAX_SELL_KOIN_SATS = 20000n * 100000000n;
 function assertSellLimit(amount) {
@@ -41,6 +49,7 @@ function create({ settings, store, persist, provider, transit, buyBusy, invalida
       'error', 'lastError', 'updatedAt', 'bridgeTx', 'txHash', 'cancelled', 'mayLeaveDust'];
     return { ...Object.fromEntries(fields.filter(k => j[k] != null).map(k => [k, j[k]])),
       needsTap: tapStates.has(j.status), canCancel: j.kind === 'sell' && !j.moved && !j.pendingKoin && !j.pendingEth,
+      canUpdateGas: canUpdateGas(j),
       pendingTx: j.pendingEth?.hash || j.pendingKoin?.id };
   }
   function live() { if (settings.demo || settings.network !== 'mainnet') throw new Error('Selling and ETH withdrawals require the live mainnet wallet'); }
@@ -112,6 +121,8 @@ function create({ settings, store, persist, provider, transit, buyBusy, invalida
       assertSellLimit(q.amount);
       if (await (await provider()).getBalance(q.from) < BigInt(q.gasBudget)) throw new Error(`Keep at least ${q.gasBudgetEth} ETH at this address for the sale's Ethereum gas`);
       payload = { kind: 'sell', ...clone(q) };
+    } else if (body.kind === 'update-gas') {
+      payload = await locked(account, () => gasReview(account));
     } else if (['retry', 'cancel'].includes(body.kind)) {
       const j = current(account);
       if (!j || done(j)) throw new Error('No trade to update');
@@ -130,12 +141,33 @@ function create({ settings, store, persist, provider, transit, buyBusy, invalida
     return locked(account, async () => {
       const existing = store().tradeHistory?.[ref];
       if (existing?.account === account) return publicJob(existing);
+      if (current(account)?.lastGasUpdateRef === ref) return publicJob(current(account));
       const intent = intents.get(ref);
       if (!intent || intent.account !== account || intent.expires <= Date.now()) throw new Error('Approval expired; review the trade again');
       intents.delete(ref);
       if (identity.origin !== intent.identity.origin || identity.rpId !== intent.identity.rpId) throw new Error('Approve from the same wallet site');
       await auth.verifyProof(account, intent.challenge, signature, chain, intent.identity);
       const v = intent.payload;
+      if (v.kind === 'update-gas') {
+        const j = current(account);
+        if (!canUpdateGas(j) || fingerprint(j) !== v.jobFingerprint) throw new Error('Sale changed; review its gas again');
+        const p = await provider();
+        const request = await ethRequest({ ...j, status: j.failedAt }, p);
+        const [network, fee, balance, nonce, latest, units] = await Promise.all([
+          p.getNetwork(), p.getFeeData(), p.getBalance(j.from), p.getTransactionCount(j.from, 'pending'),
+          p.getTransactionCount(j.from, 'latest'), p.estimateGas({ ...request, from: j.from, gasPrice: BigInt(v.gasPriceCap) }),
+        ]);
+        if (network.chainId !== 1n || nonce !== latest) throw new Error('Wait for existing Ethereum transactions to confirm');
+        if (!fee.gasPrice || fee.gasPrice <= 0n || fee.gasPrice > BigInt(v.gasPriceCap)) throw new Error('Gas changed again; review the updated fee');
+        const remaining = BigInt(v.gasBudget) - BigInt(j.gasSpent || '0');
+        if (gasHeadroom(units) * BigInt(v.gasPriceCap) > remaining) throw new Error('Gas estimate changed; review the updated fee');
+        if (balance < remaining + BigInt(request.value || 0)) throw new Error('Add enough ETH for the updated gas budget, then review again');
+        save(account, { ...j, status: j.failedAt, failedAt: null, error: null, lastError: null,
+          gasPriceCap: v.gasPriceCap, gasBudget: v.gasBudget, gasBudgetEth: fmt(v.gasBudget), lastGasUpdateRef: ref,
+          gasUpdates: [...(j.gasUpdates || []), { ref, approvedAt: Date.now(), previousGasPriceCap: j.gasPriceCap,
+            previousGasBudget: j.gasBudget, gasPriceCap: v.gasPriceCap, gasBudget: v.gasBudget }] });
+        return publicJob(current(account));
+      }
       if (['retry', 'cancel'].includes(v.kind)) {
         const j = current(account);
         if (!j || j.id !== v.jobId || done(j)) throw new Error('Trade changed; refresh first');
@@ -186,6 +218,61 @@ function create({ settings, store, persist, provider, transit, buyBusy, invalida
     if (!j || step !== `sell:${j.id}:${j.status}` || !tapStates.has(j.status) || j.pendingKoin) throw new Error('Sale changed since preparation; refresh first');
     save(account, { ...j, status: 'koin_pending', pendingKoin: { ...clone(transaction), step: j.status, sentAt: Date.now() }, moved: true });
   }
+  async function ethRequest(j, p, deadline = Math.floor(Date.now() / 1000) + 1800) {
+    if (j.status === 'eth_redeem') {
+      if (!j.record || Number(j.record.expiration) <= Date.now() + 60000) throw new Error('Vortex signatures expired; Retry to refresh them first');
+      return routes.redeemTx(j.record);
+    }
+    if (j.status === 'approve_vkoin') return swap.buildApproveTx(RC.VKOIN, RC.PERMIT2, j.vkoinAmount);
+    if (j.status === 'approve_sell_router') return swap.buildPermit2ApproveTx({ token: RC.VKOIN, spender: RC.UNIVERSAL_ROUTER, amount: j.vkoinAmount, expiration: deadline + 1800 });
+    if (j.status === 'swap_vkoin_usdt') {
+      if (await routes.quoteVkoinUsdt(p, BigInt(j.vkoinAmount)) < BigInt(j.usdtMin)) throw new Error('Price is below your approved USDT minimum; retry when the price recovers');
+      return routes.vkoinUsdtTx(j.vkoinAmount, j.usdtMin, deadline);
+    }
+    if (j.status === 'approve_sell_usdt_reset') return swap.buildApproveTx(RC.USDT, RC.V3_SWAP_ROUTER, 0n);
+    if (j.status === 'approve_sell_usdt') return swap.buildApproveTx(RC.USDT, RC.V3_SWAP_ROUTER, j.usdtAmount);
+    if (j.status === 'swap_usdt_eth') {
+      const q = await routes.quoteUsdtEth(p, BigInt(j.usdtAmount));
+      if (q.amount < BigInt(j.minWei)) throw new Error('Price is below your approved ETH minimum; retry when the price recovers');
+      return routes.usdtEthTx(j.usdtAmount, j.minWei, q.fee, j.from, deadline);
+    }
+    if (j.status === 'sell_fee') {
+      if (BigInt(j.grossReceived) < BigInt(j.minWei)) throw new Error('ETH output is below the approved minimum; operator review is required');
+      return { to: j.feeTo, value: BigInt(j.feeWei) };
+    }
+    throw new Error('This sale is not waiting for an Ethereum transaction');
+  }
+  async function gasReview(account) {
+    const j = current(account);
+    if (!canUpdateGas(j)) throw new Error('This sale is not paused for a gas update; Retry or wait for confirmation');
+    const p = await provider(), step = { ...j, status: j.failedAt };
+    const [network, fee, balance, nonce, latest] = await Promise.all([
+      p.getNetwork(), p.getFeeData(), p.getBalance(j.from), p.getTransactionCount(j.from, 'pending'), p.getTransactionCount(j.from, 'latest'),
+    ]);
+    if (network.chainId !== 1n || nonce !== latest) throw new Error('Wait for existing Ethereum transactions to confirm');
+    if (!fee.gasPrice || fee.gasPrice <= 0n) throw new Error('Ethereum gas price unavailable');
+    const suggested = (fee.gasPrice * 15n + 9n) / 10n;
+    const price = suggested > BigInt(j.gasPriceCap) ? suggested : BigInt(j.gasPriceCap);
+    const request = await ethRequest(step, p);
+    let units = gasHeadroom(await p.estimateGas({ ...request, from: j.from, gasPrice: price }));
+    for (let i = ethSteps.indexOf(j.failedAt) + 1; i < ethSteps.length; i++) {
+      if (j.route === 'B' && ethSteps[i] !== 'sell_fee') continue;
+      if (ethSteps[i] === 'sell_fee' && BigInt(j.feeWei) === 0n) continue;
+      units += stepGas[i];
+    }
+    // A Permit2 approval can expire during a later swap; reserve its renewal.
+    if (j.failedAt === 'swap_vkoin_usdt') units += stepGas[2];
+    const spent = BigInt(j.gasSpent || '0'), estimated = spent + units * price;
+    const budget = estimated > BigInt(j.gasBudget) ? estimated : BigInt(j.gasBudget);
+    const remaining = budget - spent, required = remaining + BigInt(request.value || 0);
+    return { kind: 'update-gas', jobId: j.id, jobFingerprint: fingerprint(j), amountKoin: j.amountKoin,
+      minimumEth: j.minimumEth, platformFeeEth: j.platformFeeEth,
+      gasPriceCap: price.toString(), gasBudget: budget.toString(),
+      previousGasPriceGwei: ethers.formatUnits(j.gasPriceCap, 9), gasPriceGwei: ethers.formatUnits(price, 9),
+      previousGasBudgetEth: fmt(j.gasBudget), gasBudgetEth: fmt(budget), actualGasEth: fmt(spent),
+      remainingGasEth: fmt(remaining), additionalGasEth: fmt(budget - BigInt(j.gasBudget)),
+      shortfallEth: fmt(required > balance ? required - balance : 0n), gasReady: balance >= required };
+  }
   async function stageEth(account, j, request) {
     const p = await provider();
     const [network, fee, nonce, latest] = await Promise.all([p.getNetwork(), p.getFeeData(),
@@ -193,8 +280,8 @@ function create({ settings, store, persist, provider, transit, buyBusy, invalida
     if (network.chainId !== 1n || nonce !== latest) throw new Error('Wait for existing Ethereum transactions to confirm');
     if (!fee.gasPrice || fee.gasPrice <= 0n || fee.gasPrice > BigInt(j.gasPriceCap)) throw new Error('Ethereum gas exceeds the approved price; retry when fees fall');
     const gasPrice = BigInt(j.gasPriceCap);
-    const gasLimit = (await p.estimateGas({ ...request, from: j.from, gasPrice }) * 12n + 9n) / 10n;
-    if (BigInt(j.gasSpent) + gasLimit * gasPrice > BigInt(j.gasBudget)) throw new Error('This sale reached its approved gas budget; operator review is required');
+    const gasLimit = gasHeadroom(await p.estimateGas({ ...request, from: j.from, gasPrice }));
+    if (BigInt(j.gasSpent) + gasLimit * gasPrice > BigInt(j.gasBudget)) throw new Error('This sale reached its approved gas budget; review an updated gas fee to continue');
     if (await p.getBalance(j.from) < BigInt(request.value || 0) + gasLimit * gasPrice) throw new Error('Add ETH to this address for the remaining gas, then retry');
     const raw = await new ethers.Wallet(transit(account).ethPriv).signTransaction({ ...request, gasLimit, gasPrice, nonce, chainId: 1, type: 0 });
     save(account, { ...j, pendingEth: { raw, hash: ethers.keccak256(raw), step: j.status, sentAt: 0 } });
@@ -280,27 +367,16 @@ function create({ settings, store, persist, provider, transit, buyBusy, invalida
       save(account, { ...j, status: r.expired ? 'sell_refresh' : 'eth_redeem', record: r.expired ? null : r });
     } else if (j.status === 'eth_redeem') {
       if (Number(j.record.expiration) <= Date.now() + 60000) { save(account, { ...j, status: 'sell_refresh', record: null }); return; }
-      await stageEth(account, j, routes.redeemTx(j.record));
-    } else if (j.status === 'approve_vkoin') await stageEth(account, j, swap.buildApproveTx(RC.VKOIN, RC.PERMIT2, j.vkoinAmount));
-    else if (j.status === 'approve_sell_router') await stageEth(account, j, swap.buildPermit2ApproveTx({ token: RC.VKOIN, spender: RC.UNIVERSAL_ROUTER, amount: j.vkoinAmount, expiration: deadline + 1800 }));
-    else if (j.status === 'swap_vkoin_usdt') {
-      if (await routes.quoteVkoinUsdt(p, BigInt(j.vkoinAmount)) < BigInt(j.usdtMin)) throw new Error('Price is below your approved USDT minimum; retry when the price recovers');
+    } else if (j.status === 'swap_vkoin_usdt') {
       const allowance = await swap.permit2Allowance(p, j.from, RC.VKOIN, RC.UNIVERSAL_ROUTER);
       if (BigInt(allowance.expiration) <= BigInt(deadline) || BigInt(allowance.amount) < BigInt(j.vkoinAmount)) { save(account, { ...j, status: 'approve_sell_router' }); return; }
-      await stageEth(account, j, routes.vkoinUsdtTx(j.vkoinAmount, j.usdtMin, deadline));
     } else if (j.status === 'approve_sell_usdt_reset') {
       if (await swap.allowance(p, RC.USDT, j.from, RC.V3_SWAP_ROUTER) === 0n) { save(account, { ...j, status: 'approve_sell_usdt' }); return; }
-      await stageEth(account, j, swap.buildApproveTx(RC.USDT, RC.V3_SWAP_ROUTER, 0n));
-    } else if (j.status === 'approve_sell_usdt') await stageEth(account, j, swap.buildApproveTx(RC.USDT, RC.V3_SWAP_ROUTER, j.usdtAmount));
-    else if (j.status === 'swap_usdt_eth') {
-      const q = await routes.quoteUsdtEth(p, BigInt(j.usdtAmount));
-      if (q.amount < BigInt(j.minWei)) throw new Error('Price is below your approved ETH minimum; retry when the price recovers');
-      await stageEth(account, j, routes.usdtEthTx(j.usdtAmount, j.minWei, q.fee, j.from, deadline));
     } else if (j.status === 'sell_fee') {
       if (BigInt(j.grossReceived) < BigInt(j.minWei)) throw new Error('ETH output is below the approved minimum; operator review is required');
-      if (BigInt(j.feeWei) === 0n) save(account, { ...j, status: 'done', receivedEth: fmt(j.grossReceived) });
-      else await stageEth(account, j, { to: j.feeTo, value: BigInt(j.feeWei) });
+      if (BigInt(j.feeWei) === 0n) { save(account, { ...j, status: 'done', receivedEth: fmt(j.grossReceived) }); return; }
     }
+    if (ethSteps.includes(j.status)) await stageEth(account, j, await ethRequest(j, p, deadline));
   }
   async function tick() {
     if (settings.demo) return;

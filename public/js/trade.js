@@ -127,7 +127,7 @@ const Trade = (() => {
   function resetReview() { review = null; $('#eth-withdraw-review').hidden = true; $('#btn-eth-confirm').hidden = true; }
   function open(kind) {
     resetReview(); modalMessage('');
-    $('#eth-withdraw-title').textContent = kind === 'withdraw' ? 'Withdraw Ethereum' : 'Review KOIN sale';
+    $('#eth-withdraw-title').textContent = kind === 'withdraw' ? 'Withdraw Ethereum' : kind === 'update-gas' ? 'Update sale gas fee' : 'Review KOIN sale';
     $('#eth-withdraw-fields').hidden = kind !== 'withdraw';
     $('#eth-withdraw-to').value = ''; $('#eth-withdraw-amount').value = '';
     $('#eth-withdraw-amount').dataset.max = '';
@@ -142,10 +142,15 @@ const Trade = (() => {
       $('#eth-withdraw-review').textContent = `To ${r.to}\nAmount: ${r.amountEth} ETH\nMaximum network gas: ${r.gasEth} ETH\nTotal: ${r.totalEth} ETH`
         + (r.mayLeaveDust ? '\nUnused contract-call gas stays at this address.' : r.max ? '\nMax sends the balance minus network gas.' : '');
       $('#eth-withdraw-amount').value = r.amountEth;
+    } else if (r.kind === 'update-gas') {
+      $('#eth-withdraw-review').textContent = `Resume your existing ${r.amountKoin} KOIN sale.\nMinimum sale proceeds: ${r.minimumEth} ETH\nConversion fee: ${r.platformFeeEth} ETH (included above)\nGas already paid: ${r.actualGasEth} ETH\nGas price limit: ${r.previousGasPriceGwei} → ${r.gasPriceGwei} Gwei\nPrevious maximum total network fee: ${r.previousGasBudgetEth} ETH\nNew maximum total network fee: ${r.gasBudgetEth} ETH\nAdditional maximum network fee: ${r.additionalGasEth} ETH\nRemaining gas budget: ${r.remainingGasEth} ETH\nThe sale amount, minimum output and conversion fee stay the same.`
+        + (!r.gasReady ? `\nAdd ${r.shortfallEth} ETH to your Ethereum address, then review the gas again.` : '');
     } else {
       $('#eth-withdraw-review').textContent = `${r.amountKoin} KOIN → approximately ${r.expectedEth} ETH\nMinimum if completed: ${r.minimumEth} ETH\nConversion fee: ${r.platformFeeEth} ETH (included above)\nEthereum gas budget: ${r.gasBudgetEth} ETH, paid separately from this address.\nETH arrives at ${r.from}.\nPrices can change while bridging. The sale pauses if its minimum or gas budget cannot be met.`;
     }
-    $('#btn-eth-confirm').textContent = r.kind === 'withdraw' ? 'Confirm withdrawal with passkey' : 'Approve sale with passkey';
+    $('#btn-eth-confirm').textContent = r.kind === 'withdraw' ? 'Confirm withdrawal with passkey'
+      : r.kind === 'update-gas' ? 'Approve updated gas & resume' : 'Approve sale with passkey';
+    $('#btn-eth-confirm').disabled = r.kind === 'update-gas' && !r.gasReady;
     $('#btn-eth-confirm').hidden = false;
   }
   function mount(context) {
@@ -210,6 +215,7 @@ const Trade = (() => {
     });
     $('#btn-trade-tap').addEventListener('click', tap);
     $('#btn-trade-retry').addEventListener('click', () => action('retry'));
+    $('#btn-trade-update-gas').addEventListener('click', () => action('update-gas'));
     $('#btn-trade-cancel').addEventListener('click', () => action('cancel'));
   }
   async function previewWithdrawal(max) {
@@ -225,7 +231,7 @@ const Trade = (() => {
     finally { working = false; }
   }
   async function confirm() {
-    if (working || !review) return;
+    if (working || !review || review.review.kind === 'update-gas' && !review.review.gasReady) return;
     const prepared = review, gen = generation, credentialId = ctx.credentialId();
     working = true; $('#btn-eth-confirm').disabled = true;
     document.querySelectorAll('#eth-withdraw-fields input, #eth-withdraw-fields button').forEach(n => { n.disabled = true; });
@@ -237,7 +243,8 @@ const Trade = (() => {
       const result = await ctx.api('/api/fund/trade/submit', { credentialId, ref: prepared.ref, signature });
       if (gen !== generation) return;
       $('#eth-withdraw-dialog').close(); resetReview();
-      message(result.trade.kind === 'withdraw' ? 'Withdrawal submitted. Confirmation appears below.' : 'Sale approved. Confirm the Koinos step below to continue.');
+      message(prepared.review.kind === 'update-gas' ? 'Updated gas approved. Your existing sale is resuming.'
+        : result.trade.kind === 'withdraw' ? 'Withdrawal submitted. Confirmation appears below.' : 'Sale approved. Confirm the Koinos step below to continue.');
       await Fund.refresh();
     } catch (e) { if (gen === generation) modalMessage(e.name === 'NotAllowedError' ? 'Passkey prompt closed. Nothing new was approved.' : e.message); }
     finally { working = false; $('#btn-eth-confirm').disabled = false;
@@ -281,6 +288,7 @@ const Trade = (() => {
     try {
       const prep = await ctx.api('/api/fund/trade/prepare', { credentialId, kind });
       if (gen !== generation) return;
+      if (kind === 'update-gas') { open(kind); showReview(prep); return; }
       const signature = await ctx.signPrepared({ id: prep.challenge });
       if (gen !== generation) return;
       await ctx.api('/api/fund/trade/submit', { credentialId, ref: prep.ref, signature });
@@ -302,6 +310,8 @@ const Trade = (() => {
     const j = st.trade;
     $('#trade-progress').hidden = !j || isNoticeDismissed('trade', j);
     $('#btn-trade-dismiss').hidden = !noticeIdentity('trade', j);
+    $('#btn-trade-update-gas').hidden = !j?.canUpdateGas;
+    $('#btn-trade-update-gas').disabled = st.accountActive === false || !!st.tradingUnavailable;
     if (!j) return;
     $('#trade-progress-label').textContent = j.status === 'done'
       ? j.kind === 'withdraw' ? `Sent ${j.amountEth} ETH to ${j.to}` : `${j.receivedEth} ETH received at your Ethereum address`

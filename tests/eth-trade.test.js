@@ -194,5 +194,111 @@ function transfer(token, value) { return { address: token, topics: [ethers.id('T
     assert.equal(h.trade.blocks(account), false);
     console.log('Reverse route ' + route + ': full receipt-driven completion and exact fee settlement passed');
   }
+  // Updating gas resumes the same paused sale only after a new passkey approval.
+  async function pausedSale(route = 'C') {
+    const h = harness();
+    const q = await h.trade.sellQuote(account, '100');
+    await approve(h, { kind: 'sell', quoteId: q.routes.find(r => r.route === route).quoteId });
+    Object.assign(h.current(), { status: 'error', failedAt: 'sell_fee', grossReceived: eth('0.05').toString(),
+      gasSpent: eth('0.00185').toString(), actualGasEth: '0.00185',
+      error: 'Ethereum gas exceeds the approved price; retry when fees fall' });
+    h.provider.getFeeData = async () => ({ gasPrice: 5000000000n });
+    return h;
+  }
+  for (const route of ['B', 'C']) {
+    const h = await pausedSale(route), original = JSON.parse(JSON.stringify(h.current()));
+    assert.equal(h.trade.status(account).canUpdateGas, true);
+    const prep = await h.trade.prepare(account, { kind: 'update-gas', gasPriceCap: '1', gasBudget: '1' }, identity);
+    assert.equal(prep.review.gasPriceGwei, '7.5');
+    assert.equal(prep.review.gasReady, true);
+    assert.ok(eth(prep.review.additionalGasEth) > 0n);
+    assert.deepEqual(h.current(), original, 'reviewing a fee changes no job or approval');
+    assert.equal(h.broadcasts.length, 0);
+    const sig = await proof(prep.challenge);
+    await h.trade.submit(account, prep.ref, sig, identity);
+    assert.equal(h.current().status, 'sell_fee');
+    assert.equal(h.current().gasPriceCap, '7500000000');
+    for (const field of ['id', 'amount', 'amountKoin', 'minWei', 'usdtMin', 'feeWei', 'feeTo', 'gasSpent', 'grossReceived']) {
+      assert.equal(h.current()[field], original[field], field + ' is preserved');
+    }
+    await h.trade.submit(account, prep.ref, sig, identity);
+    assert.equal(h.current().gasUpdates.length, 1, 'duplicate approvals never expand the budget twice');
+    h.restart();
+    assert.equal(h.current().gasPriceCap, '7500000000', 'approval survives restart');
+    await h.trade.tick();
+    assert.equal(ethers.Transaction.from(h.current().pendingEth.raw).gasPrice, 7500000000n);
+    await assert.rejects(h.trade.prepare(account, { kind: 'update-gas' }, identity), /not paused/);
+    const r = receipt(); r.gasPrice = 7500000000n;
+    h.receipt(r); await h.trade.tick();
+    assert.equal(h.current().status, 'done', 'the paused sale completes with the new gas cap');
+    assert.equal(h.current().receivedEth, '0.0495');
+  }
+  {
+    const h = await pausedSale();
+    await approve(h, { kind: 'retry' });
+    assert.equal(h.current().gasPriceCap, '1500000000', 'ordinary Retry never raises a fee');
+    await h.trade.tick();
+    assert.equal(h.current().status, 'error');
+    let prep = await h.trade.prepare(account, { kind: 'update-gas' }, identity);
+    h.provider.getFeeData = async () => ({ gasPrice: 100000000000n });
+    await assert.rejects(h.trade.submit(account, prep.ref, await proof(prep.challenge), identity), /Gas changed again/);
+    assert.equal(h.current().gasPriceCap, '1500000000');
+    h.provider.getFeeData = async () => ({ gasPrice: 5000000000n });
+    prep = await h.trade.prepare(account, { kind: 'update-gas' }, identity);
+    h.current().gasSpent = '1';
+    await assert.rejects(h.trade.submit(account, prep.ref, await proof(prep.challenge), identity), /Sale changed/);
+  }
+  {
+    const h = await pausedSale(); h.own(0n);
+    const prep = await h.trade.prepare(account, { kind: 'update-gas' }, identity);
+    assert.equal(prep.review.gasReady, false);
+    assert.ok(eth(prep.review.shortfallEth) > 0n);
+    await assert.rejects(h.trade.submit(account, prep.ref, await proof(prep.challenge), identity), /Add enough ETH/);
+    assert.equal(h.current().status, 'error');
+    h.current().pendingEth = { hash: 'pending' };
+    assert.equal(h.trade.status(account).canUpdateGas, false);
+    await assert.rejects(h.trade.prepare(account, { kind: 'update-gas' }, identity), /not paused/);
+    h.current().pendingEth = null; h.current().error = 'Price is below your approved ETH minimum';
+    assert.equal(h.trade.status(account).canUpdateGas, false, 'a fee update cannot bypass a price minimum');
+  }
+  {
+    const h = await pausedSale();
+    h.provider.getTransactionCount = async (_address, tag) => tag === 'pending' ? 1 : 0;
+    await assert.rejects(h.trade.prepare(account, { kind: 'update-gas' }, identity), /Wait for existing/);
+    h.provider.getTransactionCount = async () => 0;
+    const prep = await h.trade.prepare(account, { kind: 'update-gas' }, identity);
+    await assert.rejects(h.trade.submit(account, prep.ref, await proof(prep.challenge), { ...identity, origin: 'https://other.example' }), /same wallet site/);
+    assert.equal(h.current().status, 'error');
+  }
+  {
+    const h = await pausedSale();
+    Object.assign(h.current(), { failedAt: 'swap_usdt_eth', usdtAmount: '264958486' });
+    const quote = routes.quoteUsdtEth;
+    routes.quoteUsdtEth = async () => ({ amount: eth('0.01'), fee: 500 });
+    await assert.rejects(h.trade.prepare(account, { kind: 'update-gas' }, identity), /approved ETH minimum/);
+    routes.quoteUsdtEth = async () => ({ amount: eth('0.05'), fee: 500 });
+    await approve(h, { kind: 'update-gas' });
+    await h.trade.tick();
+    const tx = ethers.Transaction.from(h.current().pendingEth.raw);
+    assert.equal(tx.to, RC.V3_SWAP_ROUTER, 'a paused USDT swap resumes its existing conversion');
+    assert.equal(tx.gasPrice, 7500000000n);
+    routes.quoteUsdtEth = quote;
+  }
+  {
+    const h = await pausedSale();
+    Object.assign(h.current(), { gasSpent: h.current().gasBudget,
+      error: 'This sale reached its approved gas budget; operator review is required' });
+    h.provider.getFeeData = async () => ({ gasPrice: 1000000000n });
+    const prep = await h.trade.prepare(account, { kind: 'update-gas' }, identity);
+    assert.equal(prep.review.gasPriceGwei, '1.5');
+    assert.ok(eth(prep.review.additionalGasEth) > 0n, 'an exhausted budget can be renewed without raising the price cap');
+    const clock = Date.now;
+    try {
+      Date.now = () => prep.expires + 1;
+      await assert.rejects(h.trade.submit(account, prep.ref, await proof(prep.challenge), identity), /Approval expired/);
+    } finally { Date.now = clock; }
+    assert.equal(h.current().status, 'error');
+  }
+  console.log('Sale gas recovery: explicit passkey review, same-sale completion on both routes, restart, replay, changed fees, balance, nonce, pending receipts and price floors passed');
   routes.quote = quoteReal;
 })().catch(e => { console.error(e); process.exitCode = 1; });

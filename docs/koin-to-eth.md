@@ -25,7 +25,13 @@ for the complete Ethereum gas budget. They do not borrow from the gas
 sponsor. Quote output is after the conversion fee; Ethereum gas is shown
 separately and paid from the existing balance. Price/gas changes beyond the
 approved limits pause the sale. Retry retains those limits. Reaching the
-total gas budget requires operator review; Retry cannot silently increase it.
+total gas budget pauses the sale. Retry cannot silently increase it.
+Use **Update gas fee** to review a new price ceiling and maximum total network
+fee, including gas already paid, the remaining allowance, any additional maximum
+cost and any ETH shortfall. A new passkey approval resumes the same sale with
+those gas limits. The sale amount, conversion fee, recipient and minimum output
+stay unchanged. Existing pending transactions must confirm before a gas update;
+the update never replaces a signed transaction or restarts the conversion.
 
 ## Withdrawal behavior
 
@@ -118,3 +124,21 @@ The per-sale limit is now **20,000 KOIN**. Quote creation, approval preparation
 and submission enforce the new cap. Max chooses the smaller of the available
 KOIN balance and 20,000 KOIN. The existing ETH-value ceiling may impose a lower
 limit. Deploy the frontend and funding worker together for the change to take effect.
+
+### Read-only platform totals
+
+From the app directory, with the same `DATA_DIR` environment setting as the app:
+
+```sh
+node tools/trade-totals.js --verify
+```
+
+Alternatively, supply the existing ledger path as the final argument. The report
+deduplicates completed purchases and sales, excludes demo/incomplete trades and
+withdrawals, and returns totals without addresses or keys. `buys.koinTotal` is
+set only when every purchase can be verified against its irreversible KOIN
+receipt. `buys.koinRecorded` is a separate ledger total that can contain quoted
+amounts; missing records and receipts are reported explicitly. `sells.koinTotal`
+sums the KOIN inputs of completed sales. Coverage is limited to retained history.
+The command never acquires the funding lock, edits the ledger or sends funds.
+Share its output only; `funding.json` itself contains wallet keys.
