@@ -22,10 +22,10 @@ const gasHeadroom = units => (BigInt(units) * 12n + 9n) / 10n;
 const canUpdateGas = j => !!(j?.kind === 'sell' && j.status === 'error' && !j.pendingEth && !j.pendingKoin
   && ethSteps.includes(j.failedAt) && /gas exceeds the approved price|reached its approved gas budget/.test(j.error || ''));
 // Temporary per-sale ceiling for the owner-authorized live testing rollout.
-const MAX_SELL_KOIN_SATS = 20000n * 100000000n;
+const MAX_SELL_KOIN_SATS = 40000n * 100000000n;
 function assertSellLimit(amount) {
   if (BigInt(amount) <= 0n || BigInt(amount) > MAX_SELL_KOIN_SATS) {
-    throw new Error('Live testing is limited to 20,000 KOIN per sale');
+    throw new Error('Live testing is limited to 40,000 KOIN per sale');
   }
 }
 

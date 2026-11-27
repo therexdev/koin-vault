@@ -74,11 +74,11 @@ assert.equal(node('#trade-buy-card').hidden, true);
   await click('btn-sell-max');
   assert.equal(requests.length, beforeUnavailable, 'A retained display cannot supply Sell Max or request a quote');
   savedKoin = null;
-  for (const [balance, amount] of [['9007199254740993', '20000'], ['2000000000000', '20000'], ['1999999999999', '19999.99999999']]) {
+  for (const [balance, amount] of [['9007199254740993', '40000'], ['4000000000001', '40000'], ['4000000000000', '40000'], ['3999999999999', '39999.99999999'], ['2000000000000', '20000']]) {
     koinSats = balance;
     await click('btn-sell-max');
     assert.equal(node('#sell-koin-amount').value, amount);
-    assert.equal(requests.at(-1).data.amount, amount, 'Max uses the smaller of the balance and 20,000 KOIN');
+    assert.equal(requests.at(-1).data.amount, amount, 'Max uses the smaller of the balance and 40,000 KOIN');
   }
   trade.render({ ...status, job: { status: 'error' } });
   assert.equal(node('#btn-sell-max').disabled, true);
